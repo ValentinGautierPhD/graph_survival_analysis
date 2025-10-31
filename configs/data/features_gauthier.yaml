@@ -1,5 +1,5 @@
-# _target_: src.data.mnist_datamodule.MNISTDataModule
+_target_: survival_analysis.data.features_gauthier_datamodule.FeaturesGauthierDataModule
 data_dir: "/home/valentin/data/features/new_dataset_featv4_surv-nonan.csv"
-batch_size: 256 # Needs to be divisible by the number of devices (e.g., if in a distributed setup)
 validation_fraction: 0.2
 test_fraction: 0.2
+batch_size: 256

@@ -1,10 +1,9 @@
 from typing import Any, Dict, List, Optional, Tuple
 
-import hydra
-import lightning as L
-import torch
-from lightning import Callback, LightningDataModule, LightningModule, Trainer
+from lightning.pytorch import LightningModule, Trainer, Callback, LightningDataModule
 from lightning.pytorch.loggers import Logger
+import torch
+import hydra
 from omegaconf import DictConfig
 
 from ..utils import (
@@ -47,14 +46,15 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     :return: A tuple with metrics and dict with all instantiated objects.
     """
     # set seed for random number generators in pytorch, numpy and python.random
-    if cfg.get("seed"):
-        L.seed_everything(cfg.seed, workers=True)
+    # if cfg.get("seed"):
+    #     L.seed_everything(cfg.seed, workers=True)
 
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
     datamodule: LightningDataModule = hydra.utils.instantiate(cfg.data)
+    datamodule.setup('fit') #allows for input / output features to be configured in the model
 
     log.info(f"Instantiating model <{cfg.model._target_}>")
-    model: LightningModule = hydra.utils.instantiate(cfg.model)
+    model: LightningModule = hydra.utils.instantiate(cfg.model, in_features=datamodule.in_dims, out_features=datamodule.out_dims)
 
     log.info("Instantiating callbacks...")
     callbacks: List[Callback] = instantiate_callbacks(cfg.get("callbacks"))
@@ -90,14 +90,29 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         if ckpt_path == "":
             log.warning("Best ckpt not found! Using current weights for testing...")
             ckpt_path = None
-        trainer.test(model=model, datamodule=datamodule, ckpt_path=ckpt_path)
+        # trainer.test(model=model, datamodule=datamodule, ckpt_path=ckpt_path)
+        
         log.info(f"Best ckpt path: {ckpt_path}")
+        
+        datamodule.setup("test")
+        model_surv = CoxPH(model)
+        x_train = datamodule.x_train.numpy()
+        y_train = (datamodule.y_train.numpy()[:,0], datamodule.y_train.numpy()[:,1]) 
+        durations, events = datamodule.y_test[:,0].numpy(), datamodule.y_test[:,1].numpy()
 
-    test_metrics = trainer.callback_metrics
+        _ = model_surv.compute_baseline_hazards(x_train, y_train)
+        surv = model_surv.predict_surv_df(datamodule.x_test)
+        ev = EvalSurv(surv, durations, events, censor_surv='km')
+        time_grid = np.linspace(durations.min(), durations.max(), 100)
+
+        print(f"Concordance: {ev.concordance_td()}")
+        print(f"Brier Score: {ev.integrated_brier_score(time_grid)}")
+        test_metrics = trainer.callback_metrics
 
     # merge train and test metrics
-    metric_dict = {**train_metrics, **test_metrics}
+    metric_dict = {**train_metrics}
 
+    
     return metric_dict, object_dict
 
 
@@ -112,95 +127,7 @@ def main(cfg: DictConfig) -> Optional[float]:
     # (e.g. ask for tags if none are provided in cfg, print cfg tree, etc.)
     # extras(cfg)
 
-    # # train the model
-    # metric_dict, _ = train(cfg)
-
-    # # safely retrieve metric value for hydra-based hyperparameter optimization
-    # metric_value = get_metric_value(
-    #     metric_dict=metric_dict, metric_name=cfg.get("optimized_metric")
-    # )
-
-    # # return optimized metric
-    # return metric_value
-
-    seed = 123
-    np.random.seed(seed)
-    _ = torch.manual_seed(seed)
-
-    # Chargement du fichier de données
-    data_path = cfg.data.data_dir
-    features_df = pd.read_csv(data_path)
-
-    # Nettoyage pour ne récupérer que ce qui m'intéresse
-    clin_features_df = features_df.filter(like="clin_")
-    clin_features_df = pd.concat([clin_features_df, features_df[['patients_id',"pfs_event","pfs"]]], axis=1)
-    clin_features_df = clin_features_df.drop_duplicates()
-    clin_features_df = clin_features_df.drop(columns=["patients_id"])
-
-    # séparation en train val test
-    df_train = clin_features_df.copy()
-    df_test = df_train.sample(frac=cfg.data.test_fraction)
-    df_train = df_train.drop(df_test.index)
-    df_val = df_train.sample(frac=cfg.data.validation_fraction)
-    df_train = df_train.drop(df_val.index)
-
-    # Séparation features labels
-    x_train = df_train.drop(columns=["pfs","pfs_event"]).to_numpy(dtype="float32")
-    x_test = df_test.drop(columns=["pfs","pfs_event"]).to_numpy(dtype="float32")
-    x_val = df_val.drop(columns=["pfs","pfs_event"]).to_numpy(dtype="float32")
-
-    get_target = lambda df: (df['pfs'].to_numpy(dtype="float32"), df['pfs_event'].to_numpy(dtype="float32"))
-    y_train = get_target(df_train)
-    y_val = get_target(df_val)
-    durations_test, events_test = get_target(df_test)
-    val = x_val, y_val
-
-    # Définition du modèle
-    in_features = x_train.shape[1]
-    num_nodes = [32, 32]
-    out_features = 1
-    batch_norm = True
-    dropout = 0.1
-    output_bias = False
-
-    net = tt.practical.MLPVanilla(in_features, num_nodes, out_features, batch_norm,
-                                dropout, output_bias=output_bias)
-
-    model = CoxPH(net, tt.optim.Adam)
-
-    batch_size = 256
-    # lrfinder = model.lr_finder(x_train, y_train, batch_size, tolerance=10)
-    # _ = lrfinder.plot()
-    model.optimizer.set_lr(0.05)
-
-    epochs = 512
-    callbacks = [tt.callbacks.EarlyStopping()]
-    verbose = True
-
-    # Entraînement
-    log = model.fit(x_train, y_train, batch_size, epochs, callbacks, verbose,
-                    val_data=val, val_batch_size=batch_size)
-
-    # Evaluation
-    _ = model.compute_baseline_hazards()
-    surv = model.predict_surv_df(x_test)
-
-    # plot survival curves
-    # surv.iloc[:, :5].plot()
-    # plt.ylabel('S(t | x)')
-    # _ = plt.xlabel('Time')
-
-    ev = EvalSurv(surv, durations_test, events_test, censor_surv='km')
-    # C-index
-    print(ev.concordance_td())
-
-    time_grid = np.linspace(durations_test.min(), durations_test.max(), 100)
-    _ = ev.brier_score(time_grid).plot()
-
-    # Score intégrés (ne marche pas si scipy trop récent à cause du changement depuis scipy.integrals.simps vers scipy.integral.simpson)
-    print(ev.integrated_brier_score(time_grid))
-    print(ev.integrated_nbll(time_grid))
-
-
+    train(cfg)
+    
 if __name__ == "__main__":
     main()
