@@ -18,16 +18,9 @@ from ..utils import (
 
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import scipy
-from pathlib import Path
-from sklearn.preprocessing import StandardScaler
-#from sklearn_pandas import DataFrameMapper
 
 import torch
-import torchtuples as tt
 
-import pycox
 from pycox.models import CoxPH
 from pycox.evaluation import EvalSurv
 
