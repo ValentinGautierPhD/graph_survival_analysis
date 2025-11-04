@@ -13,13 +13,14 @@ class SurvModel(pl.LightningModule):
     Configured to use CoxPH loss from loss.CoxPHLoss()
     '''
 
-    def __init__(self, lr, in_features, out_features):
+    def __init__(self, optimizer, scheduler, in_features, out_features):
         super().__init__()
 
         self.save_hyperparameters()
-        self.lr = lr
         self.in_features = in_features
         self.out_features = out_features
+        self.partial_optimizer = optimizer
+        self.partial_scheduler = scheduler
 
         # Define Model Here (in this case MLP)
         self.net = nn.Sequential(
@@ -55,8 +56,17 @@ class SurvModel(pl.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(
+        optimizer = self.partial_optimizer(
             self.parameters(),
-            lr = self.lr
         )
-        return optimizer
+        scheduler = self.partial_scheduler(optimizer)
+        return {
+        "optimizer": optimizer,
+        "lr_scheduler": {
+            "scheduler": scheduler,
+            "monitor": "loss",
+            # "frequency": "indicates how often the metric is updated",
+            # If "monitor" references validation metrics, then "frequency" should be set to a
+            # multiple of "trainer.check_val_every_n_epoch".
+        },
+    }
