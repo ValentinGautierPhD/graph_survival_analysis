@@ -53,16 +53,15 @@ class FeaturesGauthierDataModule(LightningDataModule):
     """
 
     def __init__(
-        self,
-        data_dir: str,
+            self,
+            data_dir: str,
             validation_fraction: float = 0.2,
             test_fraction: float = 0.2,
-        batch_size: int = 256,
+            batch_size: int = 256,
     ) -> None:
-        """Initialize a `MNISTDataModule`.
+        """Initialize the data.
 
         :param data_dir: The data directory. Defaults to `"data/"`.
-        :param train_val_test_split: The train, validation and test split. Defaults to `(55_000, 5_000, 10_000)`.
         :param batch_size: The batch size. Defaults to `64`.
         :param num_workers: The number of workers. Defaults to `0`.
         :param pin_memory: Whether to pin memory. Defaults to `False`.
@@ -82,15 +81,6 @@ class FeaturesGauthierDataModule(LightningDataModule):
         self.batch_size_per_device = batch_size
         # Chargement du fichier de données
         self.data_path = data_dir
-
-
-    @property
-    def num_classes(self) -> int:
-        """Get the number of classes.
-
-        :return: The number of MNIST classes (10).
-        """
-        return 10
 
     def prepare_data(self) -> None:
         """Download data if needed. Lightning ensures that `self.prepare_data()` is called only
@@ -118,7 +108,7 @@ class FeaturesGauthierDataModule(LightningDataModule):
             features_df = pd.read_csv(self.data_path)
 
             # Nettoyage pour ne récupérer que ce qui m'intéresse
-            clin_features_df = features_df.filter(like="clin_")
+            clin_features_df = features_df.filter(regex="(clin_.+)")
             clin_features_df = pd.concat([clin_features_df, features_df[['patients_id',"pfs_event","pfs"]]], axis=1)
             clin_features_df = clin_features_df.drop_duplicates()
             clin_features_df = clin_features_df.drop(columns=["patients_id"])
