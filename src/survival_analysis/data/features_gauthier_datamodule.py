@@ -140,7 +140,7 @@ class FeaturesGauthierDataModule(LightningDataModule):
             if stage == 'test' or stage is None:    
                 # Returns correctly preprocessed target y_test {torch.Tensor} and entire df_test {pd.DataFrame} for metric calculations     
                 self.y_test = torch.from_numpy(np.concatenate(self._get_target(df_test), axis=1))
-                self.df_test = df_test
+                self.test_set = TensorDataset(self.x_test, self.y_test)
 
     def _get_target(cls, df : pd.DataFrame) -> np.ndarray:
         '''
@@ -181,37 +181,18 @@ class FeaturesGauthierDataModule(LightningDataModule):
         :return: The test dataloader.
         """
         return DataLoader(
-            dataset=self.data_test,
+            dataset=self.test_set,
             batch_size=self.batch_size_per_device,
             num_workers=1,
             shuffle=False,
         )
 
-    def get_training(self):
-        x_train = self.x_train.numpy()
-        y_train = (self.y_train.numpy()[:,0], self.y_train.numpy()[:,1]) 
-        return x_train, y_train
-        
-    def teardown(self, stage: Optional[str] = None) -> None:
-        """Lightning hook for cleaning up after `trainer.fit()`, `trainer.validate()`,
-        `trainer.test()`, and `trainer.predict()`.
+    # --- Helpers pour PyCox ---
+    def get_training_data(self):
+        """Helper pour compute_baseline_hazards"""
+        return self.x_train.numpy(), (self.y_train.numpy()[:, 0], self.y_train.numpy()[:, 1])
 
-        :param stage: The stage being torn down. Either `"fit"`, `"validate"`, `"test"`, or `"predict"`.
-            Defaults to ``None``.
-        """
-        pass
-
-    def state_dict(self) -> Dict[Any, Any]:
-        """Called when saving a checkpoint. Implement to generate and save the datamodule state.
-
-        :return: A dictionary containing the datamodule state that you want to save.
-        """
-        return {}
-
-    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
-        """Called when loading a checkpoint. Implement to reload datamodule state given datamodule
-        `state_dict()`.
-
-        :param state_dict: The datamodule state returned by `self.state_dict()`.
-        """
-        pass
+    def get_test_data(self):
+        """Helper pour l'évaluation finale (concordance, brier)"""
+        # Renvoie X_test et (durations, events)
+        return self.x_val.numpy(), self.y_val.numpy()[:, 0], self.y_val.numpy()[:, 1]
