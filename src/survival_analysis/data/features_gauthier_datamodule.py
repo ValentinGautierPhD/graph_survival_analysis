@@ -57,6 +57,9 @@ class FeaturesGauthierDataModule(LightningDataModule):
             data_dir: str,
             validation_fraction: float = 0.2,
             test_fraction: float = 0.2,
+            train_idx=None,
+            val_idx=None,
+            test_idx=None,
             batch_size: int = 256,
     ) -> None:
         """Initialize the data.
@@ -82,6 +85,10 @@ class FeaturesGauthierDataModule(LightningDataModule):
         # Chargement du fichier de données
         self.data_path = data_dir
 
+        self.train_idx = train_idx
+        self.val_idx = val_idx
+        self.test_idx = test_idx
+
     def prepare_data(self) -> None:
         """Download data if needed. Lightning ensures that `self.prepare_data()` is called only
         within a single process on CPU, so you can safely add your downloading logic within. In
@@ -93,54 +100,74 @@ class FeaturesGauthierDataModule(LightningDataModule):
         pass
 
     def setup(self, stage: Optional[str] = None) -> None:
-        """Load data. Set variables: `self.data_train`, `self.data_val`, `self.data_test`.
+        # ---------------------------------------------------
+        # 1. Charger et nettoyer les données (une seule fois)
+        # ---------------------------------------------------
+        features_df = pd.read_csv(self.data_path)
 
-        This method is called by Lightning before `trainer.fit()`, `trainer.validate()`, `trainer.test()`, and
-        `trainer.predict()`, so be careful not to execute things like random split twice! Also, it is called after
-        `self.prepare_data()` and there is a barrier in between which ensures that all the processes proceed to
-        `self.setup()` once the data is prepared and available for use.
+        clin_features_df = features_df.filter(regex="(clin_.+)")
+        clin_features_df = pd.concat(
+            [clin_features_df, features_df[['patients_id', "pfs_event", "pfs"]]],
+            axis=1
+        ).drop_duplicates()
 
-        :param stage: The stage to setup. Either `"fit"`, `"validate"`, `"test"`, or `"predict"`. Defaults to ``None``.
-        """
+        clin_features_df = clin_features_df.drop(columns=["patients_id"])
+        self.full_df = clin_features_df  # je garde ça si ça sert plus tard
 
-        # load and split datasets only if not loaded already
-        if not self.data_train and not self.data_val and not self.data_test:
-            features_df = pd.read_csv(self.data_path)
+        # Convertit en numpy pour éviter duplication plus tard
+        full_x = clin_features_df.drop(columns=["pfs", "pfs_event"]).to_numpy(dtype="float32")
+        full_y = np.concatenate(self._get_target(clin_features_df), axis=1)
 
-            # Nettoyage pour ne récupérer que ce qui m'intéresse
-            clin_features_df = features_df.filter(regex="(clin_.+)")
-            clin_features_df = pd.concat([clin_features_df, features_df[['patients_id',"pfs_event","pfs"]]], axis=1)
-            clin_features_df = clin_features_df.drop_duplicates()
-            clin_features_df = clin_features_df.drop(columns=["patients_id"])
-            # séparation en train val test
-            df_train = clin_features_df.copy()
-            df_test = df_train.sample(frac=self.test_fraction)
-            df_train = df_train.drop(df_test.index)
-            df_val = df_train.sample(frac=self.validation_fraction)
-            df_train = df_train.drop(df_val.index)
+        # ---------------------------------------------------
+        # 2. Cas où des indices sont fournis (K-Fold)
+        # ---------------------------------------------------
+        if self.train_idx is not None:
+            # Tensorisation sélective
+            self.x_train = torch.from_numpy(full_x[self.train_idx])
+            self.y_train = torch.from_numpy(full_y[self.train_idx])
 
-            # Séparation features labels
+            if self.val_idx is not None:
+                self.x_val = torch.from_numpy(full_x[self.val_idx])
+                self.y_val = torch.from_numpy(full_y[self.val_idx])
+            
+            if self.test_idx is not None:    
+                self.x_test = torch.from_numpy(full_x[self.test_idx])
+                self.y_test = torch.from_numpy(full_y[self.test_idx])
+
+        else:
+            # ---------------------------------------------------
+            # 3. Cas standard : split via fractions
+            # ---------------------------------------------------
+            df = clin_features_df.copy()
+
+            df_test = df.sample(frac=self.test_fraction)
+            df_trainval = df.drop(df_test.index)
+
+            df_val = df_trainval.sample(frac=self.validation_fraction)
+            df_train = df_trainval.drop(df_val.index)
+
+            # Convertir en tenseurs
             self.x_train = torch.from_numpy(df_train.drop(columns=["pfs","pfs_event"]).to_numpy(dtype="float32"))
-            self.x_test = torch.from_numpy(df_test.drop(columns=["pfs","pfs_event"]).to_numpy(dtype="float32"))
+            self.y_train = torch.from_numpy(np.concatenate(self._get_target(df_train), axis=1))
+
             self.x_val = torch.from_numpy(df_val.drop(columns=["pfs","pfs_event"]).to_numpy(dtype="float32"))
+            self.y_val = torch.from_numpy(np.concatenate(self._get_target(df_val), axis=1))
 
-            if stage == 'fit' or stage is None:
-                # Setup targets (duration, event)
-                self.y_train = torch.from_numpy(np.concatenate(self._get_target(df_train), axis=1))
-                self.y_val = torch.from_numpy(np.concatenate(self._get_target(df_val), axis=1))
+            self.x_test = torch.from_numpy(df_test.drop(columns=["pfs","pfs_event"]).to_numpy(dtype="float32"))
+            self.y_test = torch.from_numpy(np.concatenate(self._get_target(df_test), axis=1))
 
-                # Create training and validation datasets
-                self.train_set = TensorDataset(self.x_train, self.y_train)
-                self.val_set = TensorDataset(self.x_val, self.y_val)
+        # ---------------------------------------------------
+        # 4. Datasets selon le stage
+        # ---------------------------------------------------
+        if stage in ('fit', None):
+            self.train_set = TensorDataset(self.x_train, self.y_train)
+            self.val_set = TensorDataset(self.x_val, self.y_val)
 
-                # Input and output dimensions for building net
-                self.in_dims = self.x_train.shape[1]
-                self.out_dims = 1
+            self.in_dims = self.x_train.shape[1]
+            self.out_dims = 1
 
-            if stage == 'test' or stage is None:    
-                # Returns correctly preprocessed target y_test {torch.Tensor} and entire df_test {pd.DataFrame} for metric calculations     
-                self.y_test = torch.from_numpy(np.concatenate(self._get_target(df_test), axis=1))
-                self.test_set = TensorDataset(self.x_test, self.y_test)
+        if stage in ('test', None):
+            self.test_set = TensorDataset(self.x_test, self.y_test)
 
     def _get_target(cls, df : pd.DataFrame) -> np.ndarray:
         '''
