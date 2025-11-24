@@ -1,0 +1,18 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - data: features_gauthier # choose datamodule with `test_dataloader()` for evaluation
+  - model: survival
+  - logger: null
+  - trainer: default
+  - paths: features_gauthier
+  - extras: default
+  - hydra: default
+
+task_name: "eval"
+
+tags: ["dev"]
+
+# passing checkpoint path is necessary for evaluation
+ckpt_path: ???

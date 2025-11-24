@@ -161,7 +161,8 @@ class FeaturesGauthierDataModule(LightningDataModule):
         # ---------------------------------------------------
         if stage in ('fit', None):
             self.train_set = TensorDataset(self.x_train, self.y_train)
-            self.val_set = TensorDataset(self.x_val, self.y_val)
+            if hasattr(self, "x_val"):
+                self.val_set = TensorDataset(self.x_val, self.y_val)
 
             self.in_dims = self.x_train.shape[1]
             self.out_dims = 1
