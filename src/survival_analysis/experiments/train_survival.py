@@ -16,13 +16,7 @@ from ..utils import (
     task_wrapper,
 )
 
-import pandas as pd
-import numpy as np
-
 import torch
-
-from pycox.models import CoxPH
-from pycox.evaluation import EvalSurv
 
 log = RankedLogger(__name__, rank_zero_only=True)
 
@@ -76,31 +70,6 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         trainer.fit(model=model, datamodule=datamodule, ckpt_path=cfg.get("ckpt_path"))
 
     train_metrics = trainer.callback_metrics
-
-    if cfg.get("test"):
-        log.info("Starting testing!")
-        ckpt_path = trainer.checkpoint_callback.best_model_path
-        if ckpt_path == "":
-            log.warning("Best ckpt not found! Using current weights for testing...")
-            ckpt_path = None
-        # trainer.test(model=model, datamodule=datamodule, ckpt_path=ckpt_path)
-        
-        log.info(f"Best ckpt path: {ckpt_path}")
-        
-        datamodule.setup("test")
-        model_surv = CoxPH(model)
-        x_train = datamodule.x_train.numpy()
-        y_train = (datamodule.y_train.numpy()[:,0], datamodule.y_train.numpy()[:,1]) 
-        durations, events = datamodule.y_test[:,0].numpy(), datamodule.y_test[:,1].numpy()
-
-        _ = model_surv.compute_baseline_hazards(x_train, y_train)
-        surv = model_surv.predict_surv_df(datamodule.x_test)
-        ev = EvalSurv(surv, durations, events, censor_surv='km')
-        time_grid = np.linspace(durations.min(), durations.max(), 100)
-
-        print(f"Concordance: {ev.concordance_td()}")
-        print(f"Brier Score: {ev.integrated_brier_score(time_grid)}")
-        test_metrics = trainer.callback_metrics
 
     # merge train and test metrics
     metric_dict = {**train_metrics}
