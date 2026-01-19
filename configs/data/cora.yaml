@@ -1,0 +1,5 @@
+_target_: survival_analysis.data.cora_datamodule.CoraDataModule
+data_dir: "/home/valentin/data/cora/"
+validation_fraction: 0.2
+test_fraction: 0.2
+batch_size: 1
