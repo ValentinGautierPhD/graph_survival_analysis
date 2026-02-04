@@ -3,6 +3,7 @@ import torch
 import numpy as np
 
 from torch_geometric.loader import DataLoader
+from sklearn.preprocessing import StandardScaler
 # from torch.utils.data import DataLoader
 from lightning import LightningDataModule
 from torch_geometric.data import Data
@@ -35,8 +36,12 @@ class GauthierGraphDataModule(LightningDataModule):
         x = self.data.drop(
             columns=["patients_id", "pfs", "pfs_event", "pfs_2_years"]
         ).to_numpy(dtype=np.float32)
-
-        y = self.data["pfs_2_years"].to_numpy(dtype=np.int64)
+        scaler = StandardScaler()
+        x = scaler.fit_transform(x)
+        
+        arr = self.data["pfs_2_years"].to_numpy(dtype=np.int64)
+        y = np.zeros((arr.size, arr.max()+1), dtype=int)
+        y[np.arange(arr.size),arr] = 1
 
         x_train = x[self.splits["train"]]
         y_train = y[self.splits["train"]]
@@ -45,7 +50,7 @@ class GauthierGraphDataModule(LightningDataModule):
 
         self.in_dim = x_train.shape[-1]
         self.train_graph = Data(x=torch.from_numpy(x_train).float(), y=torch.from_numpy(y_train).float(), edge_index=edge_index)
-        self.val_graph = Data(x=torch.from_numpy(x), y=torch.from_numpy(y), edge_index=edge_index)
+        self.val_graph = Data(x=torch.from_numpy(x).float(), y=torch.from_numpy(y).float(), edge_index=edge_index)
 
 
     # ------------------------------------------------------------------

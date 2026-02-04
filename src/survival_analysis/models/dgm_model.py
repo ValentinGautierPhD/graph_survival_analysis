@@ -8,7 +8,67 @@ from torch_geometric.utils import to_dense_batch
 from torch_geometric.utils import dense_to_sparse
 import lightning as pl
 
+class MinimalDGM(pl.LightningModule):
+    def __init__(self, in_dim, hid_dim):
+        super().__init__()
+        out_dim = 2
+        # self.phi = nn.Linear(in_dim, hid_dim)
+        # self.W = nn.Parameter(torch.randn(hid_dim, hid_dim) * 0.1)
+        # self.g = nn.Linear(hid_dim, hid_dim)
+        # self.out = nn.Linear(hid_dim, 2)
+        
+        self.phi = nn.Linear(in_dim, hid_dim)
+        self.W = nn.Parameter(torch.randn(hid_dim, hid_dim) * 0.1)
+        self.g = nn.Linear(hid_dim, hid_dim)
+        self.out = nn.Linear(hid_dim, 2)
 
+    def forward(self, x, tau=0.5):
+        # x: [n, d]
+        z = self.phi(x)  # [n, h]
+        # z = torch.nn.functional.normalize(z, dim=-1)
+
+        # logits edges
+        logits = z @ self.W @ z.T  # [n, n]
+
+        # binary concrete
+        # u = torch.rand_like(logits)
+        # gumbel = torch.log(u) - torch.log(1 - u)
+        self.A = binary_concrete(logits, tau=tau,hard=True)
+
+        # messages
+        h = self.A @ self.g(z)
+        # skip
+        h = h + z
+
+        return self.out(h)
+        # return h
+
+    def training_step(self, batch, batch_idx):
+
+        # ---- forward PyG
+        pred = self(batch.x)
+        # pred: [b, n, C]
+
+        # ---- reconstruire masque dense
+        # y = batch.y
+        y, mask = to_dense_batch(batch.y, batch.batch)
+        assert mask.all()
+        y_labels = y.argmax(dim=-1)
+
+        # ---- loss principale
+        loss = torch.nn.functional.cross_entropy(pred.view(-1,2), y_labels.view(-1), weight=torch.tensor([1.0,1.0]).to(pred.device))
+
+        self.log("loss", loss,logger=True, on_epoch=True, on_step=False)
+
+        # ---- accuracy
+        correct = (pred.argmax(-1) == y.argmax(-1)).float().mean()
+        self.log("acc", correct, logger=True, on_epoch=True, on_step=False)
+
+        return loss
+
+    def configure_optimizers(self):
+        
+        return torch.optim.Adam(self.parameters(), lr=0.02)
 
 class DGM_Model(pl.LightningModule):
     def __init__(self, in_features, out_features=1, optimizer=None, scheduler=None):
@@ -35,9 +95,9 @@ class DGM_Model(pl.LightningModule):
         self.edge_weight = edge_weight
         x = torch.nn.functional.relu(self.g(torch.dropout(x_dense.view(-1,d), 0.5, train=self.training), edge_index, edge_attr=edge_weight)).view(b,n,-1)
 
-        print(x.std(), edge_weight.std())
+        # print(x.std(), edge_weight.std())
 
-        return self.fully_connected(x).view(b,n), None
+        return self.fully_connected(x), None
 
     def training_step(self, batch, batch_idx):
 
@@ -47,10 +107,12 @@ class DGM_Model(pl.LightningModule):
 
         # ---- reconstruire masque dense
         y, mask = to_dense_batch(batch.y, batch.batch)
+        y_labels = y.argmax(dim=-1)
+        # y = batch.y
         # y_dense: [b, n, C] ou [b, n]
 
         # ---- loss principale
-        loss = torch.nn.functional.binary_cross_entropy_with_logits(pred, y)
+        loss = torch.nn.functional.cross_entropy(pred.view(-1,2), y_labels.view(-1), weight=torch.tensor([1.0,5.0]).to(pred.device))
 
         self.log("loss", loss)
 
@@ -60,6 +122,26 @@ class DGM_Model(pl.LightningModule):
 
         return loss
 
+    # def validation_step(self, batch, batch_idx):
+
+    #     # ---- forward PyG
+    #     pred, logprobs = self(batch)
+    #     # pred: [b, n, C]
+
+    #     # ---- reconstruire masque dense
+    #     y, mask = to_dense_batch(batch.y, batch.batch)
+    #     # y_dense: [b, n, C] ou [b, n]
+
+    #     # ---- loss principale
+    #     loss = torch.nn.functional.binary_cross_entropy_with_logits(pred, y)
+
+    #     self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
+
+    #     # ---- accuracy
+    #     correct = (pred.argmax(-1) == y.argmax(-1)).float().mean()
+    #     self.log("val_acc", correct, on_step=False, on_epoch=True, prog_bar=True)
+
+    #     return loss
             
     def configure_optimizers(self):
         optimizer = self.partial_optimizer(
@@ -95,34 +177,31 @@ class DGM_c(nn.Module):
         
         
     def forward(self, x, A, not_used=None, fixedges=None):
-        
-        x = self.embed_f(x,A)  
-        
-        # estimate normalization parameters
-        if self.scale <0:            
-            self.centroid.data = x.mean(-2,keepdim=True).detach()
-            self.scale.data = (0.9/(x-self.centroid).abs().max()).detach()
-        
-        D, _x = pairwise_euclidean_distances((x-self.centroid)*self.scale)
-            
-        A = torch.sigmoid(self.temperature*(self.threshold.abs()-D))
 
-        #Top k pour sparsifier
-        k = 10  # ou 5, ou sqrt(n)
-        vals, idx = torch.topk(A, k, dim=-1)
+        x = self.embed_f(x, A)
 
-        mask = torch.zeros_like(A)
-        mask.scatter_(-1, idx, 1)
+        if self.scale < 0:
+            self.centroid.data = x.mean(-2, keepdim=True).detach()
+            self.scale.data = (0.9 / (x - self.centroid).abs().max()).detach()
 
-        A = A * mask
-        
-        if DGM_c.debug:
-            self.A = A.data.cpu()
-            self._x = _x.data.cpu()
-            
-#         self.A=A
-#         A = A/A.sum(-1,keepdim=True)
+        D, _ = pairwise_euclidean_distances((x - self.centroid) * self.scale)
+
+        # logits = self.temperature * (self.threshold.abs() - D)
+        logits = -D
+        logits = logits - logits.mean(dim=-1, keepdim=True)
+
+        #Sample each edge according to Bernoulli
+        mask = binary_concrete(
+            logits,
+            tau=0.5,
+            hard=True
+        )
+        A = torch.sigmoid(-(logits))*mask
+        print(A)
+
         return x, A, None
+
+        
 
 
 class MLP(nn.Module): 
@@ -149,3 +228,14 @@ class MLP(nn.Module):
 def pairwise_euclidean_distances(x, dim=-1):
     dist = torch.cdist(x,x)**2
     return dist, x
+
+def binary_concrete(logits, tau=1.0, hard=False, eps=1e-7):
+    u = torch.rand_like(logits)
+    logistic_noise = torch.log(u + eps) - torch.log(1 - u + eps)
+    y = torch.sigmoid((logits + logistic_noise) / tau)
+
+    if hard:
+        y_hard = (y > 0.5).float()
+        y = (y_hard - y).detach() + y
+
+    return y

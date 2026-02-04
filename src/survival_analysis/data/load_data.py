@@ -12,8 +12,8 @@ class load_gauthier_data:
         ).drop_duplicates()
 
         clin_features_df = clin_features_df.drop(
-            columns=clin_features_df.filter(regex=r"_\d+").columns
-        ).drop_duplicates()
+            columns=["clin_Ann_Arbor_stage","clin_ECOG_scale","clin_aaIPI",
+                     "clin_aaIPI_1.1","clin_aaIPI_2.1","clin_aaIPI_3.1"]).drop_duplicates()
 
         clin_features_df["pfs_2_years"] = ((clin_features_df["pfs_event"] == 1) & (clin_features_df["pfs"] <= 24)).astype(int)
 
