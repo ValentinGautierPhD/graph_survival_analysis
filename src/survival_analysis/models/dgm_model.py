@@ -19,24 +19,25 @@ class MinimalDGM(pl.LightningModule):
         
         self.phi = nn.Linear(in_dim, hid_dim)
         self.W = nn.Parameter(torch.randn(hid_dim, hid_dim) * 0.1)
-        self.g = nn.Linear(hid_dim, hid_dim)
+        # self.g = nn.Linear(hid_dim, hid_dim)
+        self.g = GATv2Conv(hid_dim, hid_dim, edge_dim=1, add_self_loops=False)
         self.out = nn.Linear(hid_dim, 2)
 
     def forward(self, x, tau=0.5):
         # x: [n, d]
         z = self.phi(x)  # [n, h]
-        # z = torch.nn.functional.normalize(z, dim=-1)
+        z = torch.nn.functional.normalize(z, dim=-1)
 
         # logits edges
         logits = z @ self.W @ z.T  # [n, n]
 
         # binary concrete
-        # u = torch.rand_like(logits)
-        # gumbel = torch.log(u) - torch.log(1 - u)
-        self.A = binary_concrete(logits, tau=tau,hard=True)
+        self.A = binary_concrete(logits, tau=tau, hard=False)
+        edge_index, edge_attr = dense_to_sparse(self.A)
 
         # messages
-        h = self.A @ self.g(z)
+        # h = self.A @ self.g(z)
+        h = self.g(z, edge_index=edge_index, edge_attr=edge_attr)
         # skip
         h = h + z
 
@@ -56,7 +57,7 @@ class MinimalDGM(pl.LightningModule):
         y_labels = y.argmax(dim=-1)
 
         # ---- loss principale
-        loss = torch.nn.functional.cross_entropy(pred.view(-1,2), y_labels.view(-1), weight=torch.tensor([1.0,1.0]).to(pred.device))
+        loss = torch.nn.functional.cross_entropy(pred.view(-1,2), y_labels.view(-1), weight=torch.tensor([1.0,5.0]).to(pred.device))
 
         self.log("loss", loss,logger=True, on_epoch=True, on_step=False)
 
