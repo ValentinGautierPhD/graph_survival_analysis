@@ -12,22 +12,19 @@ class MinimalDGM(pl.LightningModule):
     def __init__(self, in_dim, hid_dim):
         super().__init__()
         out_dim = 2
-        # self.phi = nn.Linear(in_dim, hid_dim)
-        # self.W = nn.Parameter(torch.randn(hid_dim, hid_dim) * 0.1)
-        # self.g = nn.Linear(hid_dim, hid_dim)
-        # self.out = nn.Linear(hid_dim, 2)
         
         self.phi = nn.Linear(in_dim, hid_dim)
         self.W = nn.Parameter(torch.randn(hid_dim, hid_dim) * 0.1)
+        self.W_message = nn.Parameter(torch.randn(hid_dim, hid_dim) * 0.1)
         # self.g = nn.Linear(hid_dim, hid_dim)
         # self.g = GATv2Conv(hid_dim, hid_dim, edge_dim=1, add_self_loops=False)
-        self.g = GCNConv(hid_dim, hid_dim, add_self_loops=False)
         self.out = nn.Linear(hid_dim, 2)
 
     def forward(self, x, tau=0.5):
         # x: [n, d]
         z = self.phi(x)  # [n, h]
         z = torch.nn.functional.normalize(z, dim=-1)
+        # z = torch.nn.functional.relu(z)
 
         # logits edges
         logits = z @ self.W @ z.T  # [n, n]
@@ -39,11 +36,12 @@ class MinimalDGM(pl.LightningModule):
         edge_attr = pi[row, col]
 
         # binary concrete
-        # self.A = binary_concrete(logits, tau=tau, hard=False)
+        # mask = binary_concrete(logits, tau=tau, hard=False)
+        # weights = z @ self.W_message @ z.T
+        # adjacency = mask * weights
         # edge_index, edge_attr = dense_to_sparse(self.A)
 
         # messages
-        # h = self.A @ self.g(z)
         # h = self.g(z, edge_index=edge_index, edge_weight=edge_attr)
         h = pi @ z
         h = nn.functional.relu(h)
