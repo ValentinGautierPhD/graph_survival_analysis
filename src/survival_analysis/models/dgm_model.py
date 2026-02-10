@@ -20,7 +20,8 @@ class MinimalDGM(pl.LightningModule):
         self.phi = nn.Linear(in_dim, hid_dim)
         self.W = nn.Parameter(torch.randn(hid_dim, hid_dim) * 0.1)
         # self.g = nn.Linear(hid_dim, hid_dim)
-        self.g = GATv2Conv(hid_dim, hid_dim, edge_dim=1, add_self_loops=False)
+        # self.g = GATv2Conv(hid_dim, hid_dim, edge_dim=1, add_self_loops=False)
+        self.g = GCNConv(hid_dim, hid_dim, add_self_loops=False)
         self.out = nn.Linear(hid_dim, 2)
 
     def forward(self, x, tau=0.5):
@@ -30,24 +31,33 @@ class MinimalDGM(pl.LightningModule):
 
         # logits edges
         logits = z @ self.W @ z.T  # [n, n]
+        pi = torch.sigmoid(logits)
+        self.A = pi
+
+        row, col = torch.nonzero(pi, as_tuple=True)
+        edge_index = torch.stack([row, col], dim=0)
+        edge_attr = pi[row, col]
 
         # binary concrete
-        self.A = binary_concrete(logits, tau=tau, hard=False)
-        edge_index, edge_attr = dense_to_sparse(self.A)
+        # self.A = binary_concrete(logits, tau=tau, hard=False)
+        # edge_index, edge_attr = dense_to_sparse(self.A)
 
         # messages
         # h = self.A @ self.g(z)
-        h = self.g(z, edge_index=edge_index, edge_attr=edge_attr)
+        # h = self.g(z, edge_index=edge_index, edge_weight=edge_attr)
+        h = pi @ z
+        h = nn.functional.relu(h)
         # skip
         h = h + z
 
-        return self.out(h)
+        return self.out(h), pi
         # return h
 
     def training_step(self, batch, batch_idx):
-
+        eps = 0.05
+        
         # ---- forward PyG
-        pred = self(batch.x)
+        pred,pi = self(batch.x)
         # pred: [b, n, C]
 
         # ---- reconstruire masque dense
@@ -57,8 +67,16 @@ class MinimalDGM(pl.LightningModule):
         y_labels = y.argmax(dim=-1)
 
         # ---- loss principale
-        loss = torch.nn.functional.cross_entropy(pred.view(-1,2), y_labels.view(-1), weight=torch.tensor([1.0,5.0]).to(pred.device))
-
+        # loss = torch.nn.functional.cross_entropy(pred.view(-1,2), y_labels.view(-1), weight=torch.tensor([1.0,5.0]).to(pred.device))
+        ce = torch.nn.functional.cross_entropy(pred.view(-1,2), y_labels.view(-1), weight=torch.tensor([1.0,5.7]).to(pred.device))
+        kl = (
+            pi * (torch.log(pi + 1e-8) - torch.log(torch.tensor(eps)))
+            + (1 - pi) * (torch.log(1 - pi + 1e-8) - torch.log(torch.tensor(1 - eps)))
+        ).mean()
+        # kl = torch.abs(pi).sum()
+        
+        loss = ce + (1e-1) * kl
+        
         self.log("loss", loss,logger=True, on_epoch=True, on_step=False)
 
         # ---- accuracy
@@ -92,7 +110,7 @@ class DGM_Model(pl.LightningModule):
         # x_dense: [b, n, d]
         
         b,n,d = x_dense.shape
-        edge_index, edge_weight = dense_to_sparse(edges)
+        edge_index, edge_weight = matrix_to_list(edges)
         self.edge_weight = edge_weight
         x = torch.nn.functional.relu(self.g(torch.dropout(x_dense.view(-1,d), 0.5, train=self.training), edge_index, edge_attr=edge_weight)).view(b,n,-1)
 
@@ -198,7 +216,6 @@ class DGM_c(nn.Module):
             hard=True
         )
         A = torch.sigmoid(-(logits))*mask
-        print(A)
 
         return x, A, None
 
@@ -240,3 +257,10 @@ def binary_concrete(logits, tau=1.0, hard=False, eps=1e-7):
         y = (y_hard - y).detach() + y
 
     return y
+
+def matrix_to_list(A):
+    row, col = torch.nonzero(A, as_tuple=True)
+    edge_index = torch.stack([row, col], dim=0)
+    edge_attr = A[row, col]
+
+    return edge_index,edge_attr
