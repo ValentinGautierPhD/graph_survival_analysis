@@ -29,21 +29,22 @@ class MinimalDGM(pl.LightningModule):
         # logits edges
         logits = z @ self.W @ z.T  # [n, n]
         pi = torch.sigmoid(logits)
-        self.A = pi
 
-        row, col = torch.nonzero(pi, as_tuple=True)
-        edge_index = torch.stack([row, col], dim=0)
-        edge_attr = pi[row, col]
+        # row, col = torch.nonzero(pi, as_tuple=True)
+        # edge_index = torch.stack([row, col], dim=0)
+        # edge_attr = pi[row, col]
 
         # binary concrete
-        # mask = binary_concrete(logits, tau=tau, hard=False)
-        # weights = z @ self.W_message @ z.T
-        # adjacency = mask * weights
+        mask = binary_concrete(logits, tau=tau, hard=True)
+        # mask = pi
+        weights = z @ self.W_message @ z.T
+        adjacency = mask * weights
+        self.A = pi
         # edge_index, edge_attr = dense_to_sparse(self.A)
 
         # messages
         # h = self.g(z, edge_index=edge_index, edge_weight=edge_attr)
-        h = pi @ z
+        h = adjacency @ z
         h = nn.functional.relu(h)
         # skip
         h = h + z
@@ -73,7 +74,7 @@ class MinimalDGM(pl.LightningModule):
         ).mean()
         # kl = torch.abs(pi).sum()
         
-        loss = ce + (1e-1) * kl
+        loss = ce + (1e-3) * kl
         
         self.log("loss", loss,logger=True, on_epoch=True, on_step=False)
 
