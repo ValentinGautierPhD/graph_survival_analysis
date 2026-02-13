@@ -76,14 +76,37 @@ class MinimalDGM(pl.LightningModule):
         
         loss = ce + (1e-3) * kl
         
-        self.log("loss", loss,logger=True, on_epoch=True, on_step=False)
+        self.log("loss", loss, on_step=False, on_epoch=True)
 
         # ---- accuracy
         correct = (pred.argmax(-1) == y.argmax(-1)).float().mean()
-        self.log("acc", correct, logger=True, on_epoch=True, on_step=False)
+        self.log("acc", correct, on_step=False, on_epoch=True)
 
         return loss
 
+    def validation_step(self, batch, batch_idx):
+        eps = 0.05
+        all_pred, pi = self(batch.x)
+        pred = all_pred[batch.val_idx]
+        y = batch.y[batch.val_idx]
+        y_labels = y.argmax(dim=-1)
+
+        ce = torch.nn.functional.cross_entropy(pred.view(-1,2), y_labels.view(-1), weight=torch.tensor([1.0,5.7]).to(pred.device))
+        kl = (
+            pi * (torch.log(pi + 1e-8) - torch.log(torch.tensor(eps)))
+            + (1 - pi) * (torch.log(1 - pi + 1e-8) - torch.log(torch.tensor(1 - eps)))
+        ).mean()
+        # kl = torch.abs(pi).sum()
+        
+        loss = ce + (1e-3) * kl
+        
+        self.log("val_loss", loss, on_step=False, on_epoch=True)
+
+        correct = (pred.argmax(-1) == y.argmax(-1)).float().mean()
+        self.log("val_acc", correct, on_step=False, on_epoch=True)
+
+        return loss
+        
     def configure_optimizers(self):
         
         return torch.optim.Adam(self.parameters(), lr=0.02)

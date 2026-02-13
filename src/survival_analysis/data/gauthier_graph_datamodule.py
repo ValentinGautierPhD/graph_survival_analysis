@@ -50,7 +50,9 @@ class GauthierGraphDataModule(LightningDataModule):
 
         self.in_dim = x_train.shape[-1]
         self.train_graph = Data(x=torch.from_numpy(x_train).float(), y=torch.from_numpy(y_train).float(), edge_index=edge_index)
+        self.train_graph.train_idx = torch.from_numpy(self.splits["train"])
         self.val_graph = Data(x=torch.from_numpy(x).float(), y=torch.from_numpy(y).float(), edge_index=edge_index)
+        self.val_graph.val_idx = torch.from_numpy(self.splits["val"])
 
 
     # ------------------------------------------------------------------
