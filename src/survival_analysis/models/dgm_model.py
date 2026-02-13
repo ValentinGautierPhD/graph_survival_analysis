@@ -14,8 +14,10 @@ class MinimalDGM(pl.LightningModule):
         out_dim = 2
         
         self.phi = nn.Linear(in_dim, hid_dim)
+        
+        # self.W = nn.Parameter(torch.triu(torch.randn(hid_dim, hid_dim) * 0.1))
         self.W = nn.Parameter(torch.randn(hid_dim, hid_dim) * 0.1)
-        self.W_message = nn.Parameter(torch.randn(hid_dim, hid_dim) * 0.1)
+        # self.W_message = nn.Parameter(torch.triu(torch.randn(hid_dim, hid_dim) * 0.1))
         # self.g = nn.Linear(hid_dim, hid_dim)
         # self.g = GATv2Conv(hid_dim, hid_dim, edge_dim=1, add_self_loops=False)
         self.out = nn.Linear(hid_dim, 2)
@@ -23,8 +25,8 @@ class MinimalDGM(pl.LightningModule):
     def forward(self, x, tau=0.5):
         # x: [n, d]
         z = self.phi(x)  # [n, h]
-        z = torch.nn.functional.normalize(z, dim=-1)
-        # z = torch.nn.functional.relu(z)
+        # z = torch.nn.functional.normalize(z, dim=-1)
+        z = torch.nn.functional.relu(z)
 
         # logits edges
         logits = z @ self.W @ z.T  # [n, n]
@@ -37,8 +39,8 @@ class MinimalDGM(pl.LightningModule):
         # binary concrete
         mask = binary_concrete(logits, tau=tau, hard=True)
         # mask = pi
-        weights = z @ self.W_message @ z.T
-        adjacency = mask * weights
+        # weights = z @ z.T
+        adjacency = pi #* weights
         self.A = pi
         # edge_index, edge_attr = dense_to_sparse(self.A)
 
@@ -62,7 +64,6 @@ class MinimalDGM(pl.LightningModule):
         # ---- reconstruire masque dense
         # y = batch.y
         y, mask = to_dense_batch(batch.y, batch.batch)
-        assert mask.all()
         y_labels = y.argmax(dim=-1)
 
         # ---- loss principale
