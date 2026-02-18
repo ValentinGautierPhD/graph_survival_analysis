@@ -7,6 +7,8 @@ from torch_geometric.nn import EdgeConv, DenseGCNConv, DenseGraphConv, GCNConv, 
 from torch_geometric.utils import to_dense_batch
 from torch_geometric.utils import dense_to_sparse
 import lightning as pl
+from pycox.models.loss import CoxPHLoss
+
 
 class MinimalDGM(pl.LightningModule):
     def __init__(self, in_dim, hid_dim):
@@ -112,6 +114,115 @@ class MinimalDGM(pl.LightningModule):
         
         return torch.optim.Adam(self.parameters(), lr=0.02)
 
+
+class SurvivalDGM(pl.LightningModule):
+    def __init__(self, in_dim, hid_dim):
+        super().__init__()
+        out_dim = 1
+        
+        self.phi = nn.Linear(in_dim, hid_dim)
+        
+        # self.W = nn.Parameter(torch.triu(torch.randn(hid_dim, hid_dim) * 0.1))
+        self.W = nn.Parameter(torch.randn(hid_dim, hid_dim) * 0.1)
+        self.W_message = nn.Parameter(torch.triu(torch.randn(hid_dim, hid_dim) * 0.1))
+        # self.g = nn.Linear(hid_dim, hid_dim)
+        self.g = GCNConv(hid_dim, hid_dim)
+        # self.g = GATv2Conv(hid_dim, hid_dim, edge_dim=1, add_self_loops=False)
+        self.out = nn.Linear(hid_dim, out_dim)
+        self.loss = CoxPHLoss()
+
+
+    def _forward_full(self,x, tau=0.5):
+        # x: [n, d]
+        z = self.phi(x)  # [n, h]
+        # z = torch.nn.functional.normalize(z, dim=-1)
+        z = torch.nn.functional.relu(z)
+
+        # logits edges
+        logits = z @ self.W @ z.T  # [n, n]
+        pi = torch.sigmoid(logits)
+
+        # binary concrete
+        mask = binary_concrete(logits, tau=tau, hard=True)
+        # mask = pi
+        # weights = z @ self.W_message @ z.T
+        adjacency = mask #* weights
+        self.A = pi
+        self.mask = mask
+
+        # Pytorch geometric format
+        # edge_index, edge_attr = matrix_to_list(adjacency)
+        
+        # messages
+        # h = self.g(z, edge_index=edge_index, edge_weight=edge_attr)
+        h = adjacency @ z
+        h = nn.functional.relu(h)
+        # skip
+        h = h + z
+
+        return self.out(h), pi
+        # return h
+
+    def forward(self, x):
+        out, _ = self._forward_full(x)
+        return out
+        
+    def training_step(self, batch, batch_idx):
+        eps = 0.05
+        beta = 0
+        
+        # ---- forward PyG
+        pred,pi = self._forward_full(batch.x)
+        # pred: [b, n, C]
+
+        # ---- reconstruire masque dense
+        # y = batch.y
+        times, events = batch.y[...,0], batch.y[...,1]
+        
+        # ---- loss principale
+        # loss = torch.nn.functional.cross_entropy(pred.view(-1,2), y_labels.view(-1), weight=torch.tensor([1.0,5.0]).to(pred.device))
+        partial_likelihood = self.loss(pred, times, events)
+        
+        kl = (
+            pi * (torch.log(pi + 1e-8) - torch.log(torch.tensor(eps)))
+            + (1 - pi) * (torch.log(1 - pi + 1e-8) - torch.log(torch.tensor(1 - eps)))
+        ).mean()
+        # kl = torch.abs(pi).sum()
+        
+        loss = partial_likelihood + beta * kl
+        
+        self.log("loss", loss, on_step=False, on_epoch=True)
+        self.log("cox_loss", partial_likelihood, on_step=False, on_epoch=True)
+        self.log("kl", beta * kl, on_step=False, on_epoch=True)
+
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        eps = 0.05
+        all_pred, pi = self._forward_full(batch.x)
+        pred = all_pred[batch.val_idx]
+        times, events = batch.y[...,0], batch.y[...,1]
+        times, events = times[batch.val_idx], events[batch.val_idx]
+
+        partial_likelihood = self.loss(pred, times, events)
+        kl = (
+            pi * (torch.log(pi + 1e-8) - torch.log(torch.tensor(eps)))
+            + (1 - pi) * (torch.log(1 - pi + 1e-8) - torch.log(torch.tensor(1 - eps)))
+        ).mean()
+        # kl = torch.abs(pi).sum()
+        
+        loss = partial_likelihood + (1e-3) * kl
+
+        
+        self.log("val_loss", loss, on_step=False, on_epoch=True)
+
+        return loss
+        
+    def configure_optimizers(self):
+        
+        return torch.optim.Adam(self.parameters(), lr=0.02)
+    
+    
 class DGM_Model(pl.LightningModule):
     def __init__(self, in_features, out_features=1, optimizer=None, scheduler=None):
         super(DGM_Model, self).__init__()
