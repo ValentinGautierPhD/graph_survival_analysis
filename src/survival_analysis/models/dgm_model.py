@@ -4,6 +4,7 @@ from torch import nn
 import torch
 import torch_geometric
 from torch_geometric.nn import EdgeConv, DenseGCNConv, DenseGraphConv, GCNConv, GATv2Conv
+from torch_geometric.typing import np
 from torch_geometric.utils import to_dense_batch
 from torch_geometric.utils import dense_to_sparse
 import lightning as pl
@@ -118,6 +119,8 @@ class MinimalDGM(pl.LightningModule):
 class SurvivalDGM(pl.LightningModule):
     def __init__(self, in_dim, hid_dim):
         super().__init__()
+        self.lambda1 = 0
+        self.lambda2 = 0
         out_dim = 1
         
         self.phi = nn.Linear(in_dim, hid_dim)
@@ -127,7 +130,7 @@ class SurvivalDGM(pl.LightningModule):
         self.W_message = nn.Parameter(torch.triu(torch.randn(hid_dim, hid_dim) * 0.1))
         # self.g = nn.Linear(hid_dim, hid_dim)
         self.g = GCNConv(hid_dim, hid_dim)
-        # self.g = GATv2Conv(hid_dim, hid_dim, edge_dim=1, add_self_loops=False)
+        # self.g = GATv2Conv(hid_dim, hid_dim, heads=2, concat=False, dropout=0.5)
         self.out = nn.Linear(hid_dim, out_dim)
         self.loss = CoxPHLoss()
 
@@ -139,28 +142,32 @@ class SurvivalDGM(pl.LightningModule):
         z = torch.nn.functional.relu(z)
 
         # logits edges
-        logits = z @ self.W @ z.T  # [n, n]
-        pi = torch.sigmoid(logits)
+        W_sym = 0.5 * (self.W + self.W.T)
+        logits = z @ W_sym @ z.T  / np.sqrt(z.size(-1)) # [n, n]
+        pi = torch.softmax(logits, dim=-1)
 
         # binary concrete
         mask = binary_concrete(logits, tau=tau, hard=True)
         # mask = pi
         # weights = z @ self.W_message @ z.T
-        adjacency = mask #* weights
+        adjacency = pi #* weights
         self.A = pi
         self.mask = mask
+        # self.weights = weights
 
         # Pytorch geometric format
-        # edge_index, edge_attr = matrix_to_list(adjacency)
+        edge_index, edge_attr = matrix_to_list(adjacency)
         
         # messages
-        # h = self.g(z, edge_index=edge_index, edge_weight=edge_attr)
-        h = adjacency @ z
-        h = nn.functional.relu(h)
+        h = self.g(z, edge_index=edge_index, edge_weight=edge_attr)
+        # h = self.g(z, edge_index=edge_index)
+        # h = adjacency @ z
+        # h = nn.functional.relu(h)
         # skip
-        h = h + z
-
-        return self.out(h), pi
+        # h = h + z
+        out = self.out(h)
+        # out[...] = 1
+        return out, pi
         # return h
 
     def forward(self, x):
@@ -168,8 +175,7 @@ class SurvivalDGM(pl.LightningModule):
         return out
         
     def training_step(self, batch, batch_idx):
-        eps = 0.05
-        beta = 0
+        eps = 1e-8
         
         # ---- forward PyG
         pred,pi = self._forward_full(batch.x)
@@ -182,36 +188,33 @@ class SurvivalDGM(pl.LightningModule):
         # ---- loss principale
         # loss = torch.nn.functional.cross_entropy(pred.view(-1,2), y_labels.view(-1), weight=torch.tensor([1.0,5.0]).to(pred.device))
         partial_likelihood = self.loss(pred, times, events)
-        
-        kl = (
-            pi * (torch.log(pi + 1e-8) - torch.log(torch.tensor(eps)))
-            + (1 - pi) * (torch.log(1 - pi + 1e-8) - torch.log(torch.tensor(1 - eps)))
-        ).mean()
+        l1_loss = pi.abs().mean()
+        entropy = -pi * torch.log(pi + eps) - (1 - pi)*torch.log(1 - pi + eps)
+        entropy_loss = entropy.mean()
         # kl = torch.abs(pi).sum()
         
-        loss = partial_likelihood + beta * kl
+        loss = partial_likelihood + self.lambda1 * l1_loss + self.lambda2 * entropy_loss
         
         self.log("loss", loss, on_step=False, on_epoch=True)
         self.log("cox_loss", partial_likelihood, on_step=False, on_epoch=True)
-        self.log("kl", beta * kl, on_step=False, on_epoch=True)
+        self.log("l1_loss", self.lambda1*l1_loss, on_step=False, on_epoch=True)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
-        eps = 0.05
+        eps = 1e-8
+        
         all_pred, pi = self._forward_full(batch.x)
         pred = all_pred[batch.val_idx]
         times, events = batch.y[...,0], batch.y[...,1]
         times, events = times[batch.val_idx], events[batch.val_idx]
 
         partial_likelihood = self.loss(pred, times, events)
-        kl = (
-            pi * (torch.log(pi + 1e-8) - torch.log(torch.tensor(eps)))
-            + (1 - pi) * (torch.log(1 - pi + 1e-8) - torch.log(torch.tensor(1 - eps)))
-        ).mean()
-        # kl = torch.abs(pi).sum()
+        l1_loss = pi.abs().mean()
+        entropy = -pi * torch.log(pi + eps) - (1 - pi)*torch.log(1 - pi + eps)
+        entropy_loss = entropy.mean()
         
-        loss = partial_likelihood + (1e-3) * kl
+        loss = partial_likelihood + self.lambda1 * l1_loss
 
         
         self.log("val_loss", loss, on_step=False, on_epoch=True)
@@ -220,7 +223,7 @@ class SurvivalDGM(pl.LightningModule):
         
     def configure_optimizers(self):
         
-        return torch.optim.Adam(self.parameters(), lr=0.02)
+        return torch.optim.Adam(self.parameters(), lr=1e-2, weight_decay=5e-4)
     
     
 class DGM_Model(pl.LightningModule):
