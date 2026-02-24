@@ -129,8 +129,8 @@ class SurvivalDGM(pl.LightningModule):
         self.W = nn.Parameter(torch.randn(hid_dim, hid_dim) * 0.1)
         self.W_message = nn.Parameter(torch.triu(torch.randn(hid_dim, hid_dim) * 0.1))
         # self.g = nn.Linear(hid_dim, hid_dim)
-        self.g = GCNConv(hid_dim, hid_dim)
-        # self.g = GATv2Conv(hid_dim, hid_dim, heads=2, concat=False, dropout=0.5)
+        # self.g = GCNConv(hid_dim, hid_dim)
+        self.g = GATv2Conv(hid_dim, hid_dim, heads=1, edge_dim=1, concat=False)
         self.out = nn.Linear(hid_dim, out_dim)
         self.loss = CoxPHLoss()
 
@@ -143,8 +143,10 @@ class SurvivalDGM(pl.LightningModule):
 
         # logits edges
         W_sym = 0.5 * (self.W + self.W.T)
+        # W_message_sym = 0.5 * (self.W_message + self.W_message.T)
         logits = z @ W_sym @ z.T  / np.sqrt(z.size(-1)) # [n, n]
-        pi = torch.softmax(logits, dim=-1)
+        # weights = z @ 
+        pi = torch.sigmoid(logits)
 
         # binary concrete
         mask = binary_concrete(logits, tau=tau, hard=True)
@@ -159,7 +161,7 @@ class SurvivalDGM(pl.LightningModule):
         edge_index, edge_attr = matrix_to_list(adjacency)
         
         # messages
-        h = self.g(z, edge_index=edge_index, edge_weight=edge_attr)
+        h = self.g(z, edge_index=edge_index, edge_attr=edge_attr)
         # h = self.g(z, edge_index=edge_index)
         # h = adjacency @ z
         # h = nn.functional.relu(h)
@@ -223,7 +225,7 @@ class SurvivalDGM(pl.LightningModule):
         
     def configure_optimizers(self):
         
-        return torch.optim.Adam(self.parameters(), lr=1e-2, weight_decay=5e-4)
+        return torch.optim.Adam(self.parameters(), lr=1e-3, weight_decay=5e-4)
     
     
 class DGM_Model(pl.LightningModule):
