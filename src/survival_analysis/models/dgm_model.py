@@ -150,7 +150,7 @@ class SurvivalDGM(pl.LightningModule):
         mask = binary_concrete(logits, tau=tau, hard=True)
         # mask = pi
         # weights = z @ self.W_message @ z.T
-        adjacency = pi #* weights
+        adjacency = pi * mask
         self.A = pi
         self.mask = mask
         # self.weights = weights
