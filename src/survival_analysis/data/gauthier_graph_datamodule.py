@@ -33,9 +33,10 @@ class GauthierGraphDataModule(LightningDataModule):
     # SETUP: chargement + splits + masques
     # ------------------------------------------------------------------
     def setup(self, stage: Optional[str] = None):
+
         x = self.data.drop(
             columns=["patients_id", "pfs", "pfs_event", "pfs_2_years"]
-        ).to_numpy(dtype=np.float32)
+        ).drop_duplicates().to_numpy(dtype=np.float32)
         scaler = StandardScaler()
         x = scaler.fit_transform(x)
         
@@ -50,7 +51,9 @@ class GauthierGraphDataModule(LightningDataModule):
 
         self.in_dim = x_train.shape[-1]
         self.train_graph = Data(x=torch.from_numpy(x_train).float(), y=torch.from_numpy(y_train).float(), edge_index=edge_index)
+        self.train_graph.train_idx = torch.from_numpy(self.splits["train"])
         self.val_graph = Data(x=torch.from_numpy(x).float(), y=torch.from_numpy(y).float(), edge_index=edge_index)
+        self.val_graph.val_idx = torch.from_numpy(self.splits["val"])
 
 
     # ------------------------------------------------------------------
@@ -63,3 +66,34 @@ class GauthierGraphDataModule(LightningDataModule):
     def val_dataloader(self) -> DataLoader:
         return DataLoader([self.val_graph], batch_size=1, shuffle=False)
 
+
+class GauthierGraphSurvivalDataModule(GauthierGraphDataModule):
+
+    def __init__(
+        self,
+        data,
+        splits: dict,
+    ):
+
+        super().__init__(data,splits)
+
+    def setup(self, stage: Optional[str] = None):
+
+        x = self.data.drop(
+            columns=["patients_id", "pfs", "pfs_event", "pfs_2_years"]
+        ).drop_duplicates().to_numpy(dtype=np.float32)
+        scaler = StandardScaler()
+        x = scaler.fit_transform(x)
+        
+        y = self.data[["pfs", "pfs_event"]].to_numpy(dtype=np.float32)
+
+        x_train = x[self.splits["train"]]
+        y_train = y[self.splits["train"]]
+        
+        edge_index = torch.empty((2,0), dtype=torch.long)
+
+        self.in_dim = x_train.shape[-1]
+        self.train_graph = Data(x=torch.from_numpy(x_train).float(), y=torch.from_numpy(y_train).float(), edge_index=edge_index)
+        self.train_graph.train_idx = torch.from_numpy(self.splits["train"])
+        self.val_graph = Data(x=torch.from_numpy(x).float(), y=torch.from_numpy(y).float(), edge_index=edge_index)
+        self.val_graph.val_idx = torch.from_numpy(self.splits["val"])
