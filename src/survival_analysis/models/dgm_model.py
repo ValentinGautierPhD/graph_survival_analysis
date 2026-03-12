@@ -119,7 +119,7 @@ class MinimalDGM(pl.LightningModule):
 class SurvivalDGM(pl.LightningModule):
     def __init__(self, in_dim, hid_dim):
         super().__init__()
-        self.lambda1 = 0
+        self.lambda1 = 1
         self.lambda2 = 0
         out_dim = 1
         
@@ -150,9 +150,8 @@ class SurvivalDGM(pl.LightningModule):
 
         # binary concrete
         mask = binary_concrete(logits, tau=tau, hard=True)
-        # mask = pi
         # weights = z @ self.W_message @ z.T
-        adjacency = pi * mask
+        adjacency =  mask
         self.A = pi
         self.mask = mask
         # self.weights = weights
