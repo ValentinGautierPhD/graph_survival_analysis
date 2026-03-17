@@ -1,0 +1,18 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - /data: features_gauthier_graph # choose datamodule with `test_dataloader()` for evaluation
+  - /model: dgm
+  - /logger: null
+  - /trainer: gpu
+  - /paths: default
+  - /extras: default
+  - /hydra: default
+
+task_name: "eval_dgm"
+
+tags: ["dev"]
+
+# passing checkpoint path is necessary for evaluation
+ckpt_path: ???

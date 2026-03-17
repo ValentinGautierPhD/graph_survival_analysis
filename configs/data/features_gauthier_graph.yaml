@@ -1,0 +1,13 @@
+loader:
+  _target_: survival_analysis.data.load_data.load_gauthier_data
+  data_path:  "/home/valentin/data/features/features_gauthier_dmax.csv"
+  
+splitter:
+  _target_: survival_analysis.data.splitter.KFoldSplits
+  folds: 5
+  size: null
+
+datamodule:
+  _target_: survival_analysis.data.gauthier_graph_datamodule.GauthierGraphSurvivalDataModule
+  data: null
+  splits: null
