@@ -1,0 +1,11 @@
+# @package _global_
+
+# example of config file for storing private and user specific environment variables, like keys or system paths
+# rename it to "default.yaml" (anything except 'example.yaml' is excluded from version control by default)
+# hydra allows you to reference variables in .yaml configs with special syntax: ${oc.env:MY_VAR}
+hydra:
+  job:
+    env_set:
+      WANDB_API_KEY: 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
+      WANDB_ENTITY: valentin-gautier-centrale-nantes
+      WANDB_USERNAME: valentin-gautier

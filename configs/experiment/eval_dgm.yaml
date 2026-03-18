@@ -4,11 +4,12 @@ defaults:
   - _self_
   - /data: features_gauthier_graph # choose datamodule with `test_dataloader()` for evaluation
   - /model: dgm
-  - /logger: null
+  - /logger: wandb
   - /trainer: gpu
   - /paths: default
   - /extras: default
   - /hydra: default
+  - optional /local: default
 
 task_name: "eval_dgm"
 

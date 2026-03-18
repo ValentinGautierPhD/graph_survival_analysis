@@ -53,9 +53,10 @@ def main(cfg: DictConfig) -> Optional[float]:
         datamodule.setup()
 
         model: LightningModule = hydra.utils.instantiate(cfg.model, in_dim=datamodule.in_dim)
+        
+        logger: list[Logger] = instantiate_loggers(cfg.get("logger"))
 
-        print("trainer")
-        trainer: Trainer = hydra.utils.instantiate(cfg.trainer)
+        trainer: Trainer = hydra.utils.instantiate(cfg.trainer, logger=logger)
 
         trainer.fit(model=model, datamodule=datamodule, ckpt_path=cfg.get("ckpt_path"))
 

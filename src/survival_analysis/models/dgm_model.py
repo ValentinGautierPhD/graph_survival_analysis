@@ -198,9 +198,9 @@ class SurvivalDGM(pl.LightningModule):
         
         loss = partial_likelihood + self.lambda1 * l1_loss + self.lambda2 * entropy_loss
         
-        self.log("loss", loss, on_step=False, on_epoch=True)
-        self.log("cox_loss", partial_likelihood, on_step=False, on_epoch=True)
-        self.log("l1_loss", self.lambda1*l1_loss, on_step=False, on_epoch=True)
+        self.log("train/loss", loss, on_step=False, on_epoch=True)
+        self.log("train/cox_loss", partial_likelihood, on_step=False, on_epoch=True)
+        self.log("train/l1_loss", self.lambda1*l1_loss, on_step=False, on_epoch=True)
 
         return loss
 
@@ -220,7 +220,7 @@ class SurvivalDGM(pl.LightningModule):
         loss = partial_likelihood + self.lambda1 * l1_loss
 
         
-        self.log("val_loss", loss, on_step=False, on_epoch=True)
+        self.log("val/loss", loss, on_step=False, on_epoch=True)
 
         return loss
         

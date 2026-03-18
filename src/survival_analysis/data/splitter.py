@@ -18,6 +18,6 @@ class TrainTestSplit:
         
 class KFoldSplits:
     def __init__(self, size, folds=5):
-        kf = KFold(n_splits=5)
+        kf = KFold(n_splits=folds)
         all_indices = np.arange(size)
         self.splits = kf.split(all_indices)
