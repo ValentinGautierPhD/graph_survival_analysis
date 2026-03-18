@@ -41,7 +41,7 @@ def main(cfg: DictConfig) -> Optional[float]:
     all_results_brier = []
 
     print("in loop")
-    for train_idx, val_idx in splitter.splits:
+    for i,(train_idx, val_idx) in enumerate(splitter.splits):
 
         splits = {
             "train": train_idx,
@@ -54,6 +54,12 @@ def main(cfg: DictConfig) -> Optional[float]:
 
         model: LightningModule = hydra.utils.instantiate(cfg.model, in_dim=datamodule.in_dim)
         
+        if "wandb" in cfg.logger:
+            # On définit un ID unique pour ce run de fold
+            cfg.logger.wandb.group = f"exp_{cfg.model._target_.split('.')[-1]}" # Groupe commun
+            cfg.logger.wandb.name = f"fold_{i}" # Nom spécifique au fold
+            cfg.logger.wandb.job_type = "cross-val"
+
         logger: list[Logger] = instantiate_loggers(cfg.get("logger"))
 
         trainer: Trainer = hydra.utils.instantiate(cfg.trainer, logger=logger)

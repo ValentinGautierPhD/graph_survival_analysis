@@ -236,7 +236,7 @@ class SurvivalDGM(pl.LightningModule):
         "optimizer": optimizer,
         "lr_scheduler": {
             "scheduler": scheduler,
-            "monitor": "loss",
+            "monitor": "val/loss",
             # "frequency": "indicates how often the metric is updated",
             # If "monitor" references validation metrics, then "frequency" should be set to a
             # multiple of "trainer.check_val_every_n_epoch".
