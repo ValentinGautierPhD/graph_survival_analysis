@@ -1,0 +1,19 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# The rest
+logs/
+.python-version
+.ipynb_checkpoints/
+node_modules/
+package-lock.json
+package.json
+tests.ipynb
