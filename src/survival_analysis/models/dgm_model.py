@@ -188,16 +188,8 @@ class SurvivalDGM(pl.LightningModule):
         # y = batch.y
         times, events = batch.y[...,0], batch.y[...,1]
         
-        # ---- loss principale
-        # loss = torch.nn.functional.cross_entropy(pred.view(-1,2), y_labels.view(-1), weight=torch.tensor([1.0,5.0]).to(pred.device))
-        partial_likelihood = self.loss(pred, times, events)
-        l1_loss = pi.abs().mean()
-        entropy = -pi * torch.log(pi + eps) - (1 - pi)*torch.log(1 - pi + eps)
-        entropy_loss = entropy.mean()
-        # kl = torch.abs(pi).sum()
-        
-        loss = partial_likelihood + self.lambda1 * l1_loss + self.lambda2 * entropy_loss
-        
+        loss, partial_likelihood, l1_loss, *_ = self.full_loss(pred, times, events, pi)
+
         self.log("train/loss", loss, on_step=False, on_epoch=True)
         self.log("train/cox_loss", partial_likelihood, on_step=False, on_epoch=True)
         self.log("train/l1_loss", self.lambda1*l1_loss, on_step=False, on_epoch=True)
@@ -205,22 +197,16 @@ class SurvivalDGM(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        eps = 1e-8
         
         all_pred, pi = self._forward_full(batch.x)
         pred = all_pred[batch.val_idx]
         times, events = batch.y[...,0], batch.y[...,1]
         times, events = times[batch.val_idx], events[batch.val_idx]
 
-        partial_likelihood = self.loss(pred, times, events)
-        l1_loss = pi.abs().mean()
-        entropy = -pi * torch.log(pi + eps) - (1 - pi)*torch.log(1 - pi + eps)
-        entropy_loss = entropy.mean()
-        
-        loss = partial_likelihood + self.lambda1 * l1_loss
-
+        loss, partial_likelihood, *_ = self.full_loss(pred, times, events, pi)
         
         self.log("val/loss", loss, on_step=False, on_epoch=True)
+        self.log("val/partial_likelihood", loss, on_step=False, on_epoch=True)
 
         return loss
         
@@ -242,6 +228,17 @@ class SurvivalDGM(pl.LightningModule):
             # multiple of "trainer.check_val_every_n_epoch".
         },
     }
+
+    def full_loss(self, pred, times, events, pi):
+        eps = 1e-8
+        partial_likelihood = self.loss(pred, times, events)
+        l1_loss = pi.abs().mean()
+        entropy = -pi * torch.log(pi + eps) - (1 - pi)*torch.log(1 - pi + eps)
+        entropy_loss = entropy.mean()
+        
+        loss = partial_likelihood + self.lambda1 * l1_loss + self.lambda2 * entropy_loss
+
+        return loss, partial_likelihood, l1_loss, entropy_loss
 
 #Euclidean distance
 def pairwise_euclidean_distances(x, dim=-1):
