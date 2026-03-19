@@ -1,4 +1,5 @@
 import hydra
+import wandb
 import torch
 import numpy as np
 from omegaconf import DictConfig
@@ -128,6 +129,9 @@ def main(cfg: DictConfig) -> Optional[float]:
             
     log.info(f"Final Results for Fold {cfg.data.split_index} sent to loggers.")
     
+    if "wandb" in cfg.logger:
+        wandb.finish()   
+
     return mean_cindex
 
 if __name__ == "__main__":
