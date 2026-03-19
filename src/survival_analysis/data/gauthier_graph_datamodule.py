@@ -1,66 +1,81 @@
-from typing import Optional, Any
-import torch
+import pandas as pd
 import numpy as np
-
-from torch_geometric.loader import DataLoader
-from sklearn.preprocessing import StandardScaler
-# from torch.utils.data import DataLoader
+import json
+import torch
+from typing import Optional
 from lightning import LightningDataModule
 from torch_geometric.data import Data
-import pandas as pd 
+from torch_geometric.loader import DataLoader
+from sklearn.preprocessing import StandardScaler
 
 class GauthierGraphDataModule(LightningDataModule):
-
     def __init__(
         self,
-        data,
-        splits: dict,
+        csv_path: str,
+        json_splits_path: str,
+        split_index: int = 0, # Pour choisir quel split utiliser dans la liste JSON
     ):
         super().__init__()
+        # On sauvegarde les chemins dans les hyperparamètres
         self.save_hyperparameters(logger=False)
-
-        self.data = data
-        self.splits = splits
+        self.csv_path = csv_path
+        self.json_splits_path = json_splits_path
+        self.split_index = split_index
+        
         self.out_dim = 1
+        self.in_dim = None
 
-    # ------------------------------------------------------------------
-    # PREPARE DATA: téléchargement
-    # ------------------------------------------------------------------
     def prepare_data(self):
+        # Optionnel : On pourrait vérifier ici si les fichiers existent
         pass
 
-    # ------------------------------------------------------------------
-    # SETUP: chargement + splits + masques
-    # ------------------------------------------------------------------
     def setup(self, stage: Optional[str] = None):
+        # 1. Chargement des données
+        df_raw = pd.read_csv(self.csv_path)
+        
+        with open(self.json_splits_path, 'r') as f:
+            all_splits = json.load(f)
+            # On récupère le split spécifique (la liste de dict vue précédemment)
+            current_split = all_splits[self.split_index]
 
-        x = self.data.drop(
+        # 2. Préparation des features (X)
+        x_raw = df_raw.drop(
             columns=["patients_id", "pfs", "pfs_event", "pfs_2_years"]
-        ).drop_duplicates().to_numpy(dtype=np.float32)
+        ).to_numpy(dtype=np.float32)
+        
         scaler = StandardScaler()
-        x = scaler.fit_transform(x)
+        x_scaled = scaler.fit_transform(x_raw)
         
-        arr = self.data["pfs_2_years"].to_numpy(dtype=np.int64)
-        y = np.zeros((arr.size, arr.max()+1), dtype=int)
-        y[np.arange(arr.size),arr] = 1
+        # 3. Préparation des labels (Y) - Classification
+        arr = df_raw["pfs_2_years"].to_numpy(dtype=np.int64)
+        y_one_hot = np.zeros((arr.size, arr.max() + 1), dtype=np.float32)
+        y_one_hot[np.arange(arr.size), arr] = 1
 
-        x_train = x[self.splits["train"]]
-        y_train = y[self.splits["train"]]
+        # 4. Application des splits (indices du JSON)
+        train_idx = current_split["train"]
+        val_idx = current_split["test"] 
+
+        # Conversion en tensors
+        edge_index = torch.empty((2, 0), dtype=torch.long)
         
-        edge_index = torch.empty((2,0), dtype=torch.long)
+        self.in_dim = x_scaled.shape[-1]
 
-        self.in_dim = x_train.shape[-1]
-        self.train_graph = Data(x=torch.from_numpy(x_train).float(), y=torch.from_numpy(y_train).float(), edge_index=edge_index)
-        self.train_graph.train_idx = torch.from_numpy(self.splits["train"])
-        self.val_graph = Data(x=torch.from_numpy(x).float(), y=torch.from_numpy(y).float(), edge_index=edge_index)
-        self.val_graph.val_idx = torch.from_numpy(self.splits["val"])
+        # Train Graph (uniquement les données de train)
+        self.train_graph = Data(
+            x=torch.from_numpy(x_scaled[train_idx]).float(),
+            y=torch.from_numpy(y_one_hot[train_idx]).float(),
+            edge_index=edge_index
+        )
+        
+        # Val Graph 
+        self.val_graph = Data(
+            x=torch.from_numpy(x_scaled).float(), 
+            y=torch.from_numpy(y_one_hot).float(),
+            edge_index=edge_index
+        )
+        self.val_graph.val_idx = torch.tensor(val_idx, dtype=torch.long)
 
-
-    # ------------------------------------------------------------------
-    # DATALOADERS
-    # ------------------------------------------------------------------
     def train_dataloader(self) -> DataLoader:
-        # un DataLoader qui renvoie un seul élément : le graphe
         return DataLoader([self.train_graph], batch_size=1, shuffle=False)
 
     def val_dataloader(self) -> DataLoader:
@@ -68,32 +83,41 @@ class GauthierGraphDataModule(LightningDataModule):
 
 
 class GauthierGraphSurvivalDataModule(GauthierGraphDataModule):
-
-    def __init__(
-        self,
-        data,
-        splits: dict,
-    ):
-
-        super().__init__(data,splits)
+    def __init__(self, csv_path: str, json_splits_path: str, split_index: int = 0):
+        super().__init__(csv_path, json_splits_path, split_index)
 
     def setup(self, stage: Optional[str] = None):
+        # On recharge les données
+        df_raw = pd.read_csv(self.csv_path)
+        with open(self.json_splits_path, 'r') as f:
+            current_split = json.load(f)[self.split_index]
 
-        x = self.data.drop(
+        # Features
+        x_raw = df_raw.drop(
             columns=["patients_id", "pfs", "pfs_event", "pfs_2_years"]
-        ).drop_duplicates().to_numpy(dtype=np.float32)
+        ).to_numpy(dtype=np.float32)
+        
         scaler = StandardScaler()
-        x = scaler.fit_transform(x)
+        x_scaled = scaler.fit_transform(x_raw)
         
-        y = self.data[["pfs", "pfs_event"]].to_numpy(dtype=np.float32)
+        # Labels spécifiques à la Survie (Time, Event)
+        y_survival = df_raw[["pfs", "pfs_event"]].to_numpy(dtype=np.float32)
 
-        x_train = x[self.splits["train"]]
-        y_train = y[self.splits["train"]]
+        train_idx = current_split["train"]
+        val_idx = current_split["test"]
+
+        edge_index = torch.empty((2, 0), dtype=torch.long)
+        self.in_dim = x_scaled.shape[-1]
+
+        self.train_graph = Data(
+            x=torch.from_numpy(x_scaled[train_idx]).float(),
+            y=torch.from_numpy(y_survival[train_idx]).float(),
+            edge_index=edge_index
+        )
         
-        edge_index = torch.empty((2,0), dtype=torch.long)
-
-        self.in_dim = x_train.shape[-1]
-        self.train_graph = Data(x=torch.from_numpy(x_train).float(), y=torch.from_numpy(y_train).float(), edge_index=edge_index)
-        self.train_graph.train_idx = torch.from_numpy(self.splits["train"])
-        self.val_graph = Data(x=torch.from_numpy(x).float(), y=torch.from_numpy(y).float(), edge_index=edge_index)
-        self.val_graph.val_idx = torch.from_numpy(self.splits["val"])
+        self.val_graph = Data(
+            x=torch.from_numpy(x_scaled).float(),
+            y=torch.from_numpy(y_survival).float(),
+            edge_index=edge_index
+        )
+        self.val_graph.val_idx = torch.tensor(val_idx, dtype=torch.long)

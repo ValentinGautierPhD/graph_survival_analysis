@@ -1,13 +1,12 @@
-loader:
-  _target_: survival_analysis.data.load_data.load_gauthier_data
-  data_path:  "/home/valentin/data/features/features_gauthier_dmax.csv"
-  
-splitter:
-  _target_: survival_analysis.data.splitter.KFoldSplits
-  folds: 5
-  size: null
+split_index: 0
+
+# Chemins vers les fichiers physiques
+csv_path: "/home/valentin/data/features/clean/features_patients.csv"
+json_splits_path: "/home/valentin/data/features/clean/splits.json"
 
 datamodule:
   _target_: survival_analysis.data.gauthier_graph_datamodule.GauthierGraphSurvivalDataModule
-  data: null
-  splits: null
+  # On passe les arguments attendus par le __init__ de ton nouveau DataModule
+  csv_path: ${data.csv_path}
+  json_splits_path: ${data.json_splits_path}
+  split_index: ${data.split_index}

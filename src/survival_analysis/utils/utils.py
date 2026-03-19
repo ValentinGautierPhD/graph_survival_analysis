@@ -1,6 +1,8 @@
 import warnings
 from importlib.util import find_spec
 from typing import Any, Callable, Dict, Optional, Tuple
+from sklearn.model_selection import KFold
+import json
 
 from omegaconf import DictConfig
 
@@ -117,3 +119,17 @@ def get_metric_value(metric_dict: Dict[str, Any], metric_name: Optional[str]) ->
     log.info(f"Retrieved metric value! <{metric_name}={metric_value}>")
 
     return metric_value
+
+
+def make_splits(size: int, n_splits: int, output_path: str) -> None:
+    all_indices= [i for i in range(size)]
+    kfold = KFold(n_splits=n_splits)
+    splits_list = []
+    for train_index, test_index in kfold.split(all_indices):
+        splits_list.append({
+            "train": train_index.tolist(),
+            "test": test_index.tolist()
+        })
+
+    with open(output_path, 'w') as f:
+        json.dump(splits_list, f, indent=4)

@@ -1,95 +1,134 @@
-from typing import Optional
+import hydra
+import torch
 import numpy as np
+from omegaconf import DictConfig
+from typing import Optional
 from pycox.models import CoxPH
 from pycox.evaluation import EvalSurv
-import hydra
-from omegaconf import DictConfig
-from lightning.pytorch import LightningModule, Trainer, Callback, LightningDataModule
+from lightning.pytorch import LightningModule, Trainer, LightningDataModule
 from lightning.pytorch.loggers import Logger
-from typing import Any, Dict, List, Optional, Tuple
 
 from ..utils import (
     RankedLogger,
-)
-
-from ..utils import (
-    RankedLogger,
-    instantiate_callbacks,
     instantiate_loggers,
     log_hyperparameters,
 )
-log = RankedLogger(__name__, rank_zero_only=True)
 
+log = RankedLogger(__name__, rank_zero_only=True)
 
 @hydra.main(version_base="1.3", config_path="../../../configs", config_name="experiment/eval_dgm.yaml")
 def main(cfg: DictConfig) -> Optional[float]:
-    """Main entry point for training.
-
-    :param cfg: DictConfig configuration composed by Hydra.
-    :return: Optional[float] with optimized metric value.
     """
-    # apply extra utilities
-    # (e.g. ask for tags if none are provided in cfg, print cfg tree, etc.)
-    # extras(cfg)
-    print("instantiating loader")
-    loader = hydra.utils.instantiate(cfg.data.loader)
+    Main entry point for a single fold evaluation.
+    Le split à utiliser est défini dans cfg.data.split_index.
+    """
+
+    # 1. Instanciation du DataModule (qui gère CSV + JSON en interne)
+    # On s'assure que cfg.data.datamodule contient les chemins csv_path et json_splits_path
+    log.info(f"Instantiating datamodule for split index: {cfg.data.split_index}")
+    datamodule: LightningDataModule = hydra.utils.instantiate(cfg.data.datamodule)
     
-    print("instantiating splitter")
-    splitter = hydra.utils.instantiate(cfg.data.splitter, size=loader.size)
+    # On prépare manuellement pour récupérer in_dim avant l'instanciation du modèle
+    datamodule.prepare_data()
+    datamodule.setup()
 
-    all_results_concordance = []
-    all_results_brier = []
+    # 2. Instanciation du Modèle
+    log.info(f"Instantiating model <{cfg.model._target_}>")
+    model: LightningModule = hydra.utils.instantiate(cfg.model, in_dim=datamodule.in_dim)
 
-    print("in loop")
-    for i,(train_idx, val_idx) in enumerate(splitter.splits):
+    # 3. Gestion spécifique du Logger (W&B)
+    if "wandb" in cfg.logger:
+        # On injecte dynamiquement le fold dans le nom du run
+        cfg.logger.wandb.group = f"exp_{cfg.model._target_.split('.')[-1]}"
+        cfg.logger.wandb.name = f"fold_{cfg.data.split_index}"
+        cfg.logger.wandb.job_type = "single-fold"
 
-        splits = {
-            "train": train_idx,
-            "val": val_idx,
-        }
+    loggers: list[Logger] = instantiate_loggers(cfg.get("logger"))
 
-        datamodule: LightningDataModule = hydra.utils.instantiate(cfg.data.datamodule, data=loader.data, splits=splits)
-        datamodule.prepare_data()
-        datamodule.setup()
+    # 4. Instanciation du Trainer et Entraînement
+    log.info("Instantiating trainer")
+    trainer: Trainer = hydra.utils.instantiate(cfg.trainer, logger=loggers)
 
-        model: LightningModule = hydra.utils.instantiate(cfg.model, in_dim=datamodule.in_dim)
+    # Log des hyperparamètres vers le logger
+    object_dict = {
+        "cfg": cfg,
+        "datamodule": datamodule,
+        "model": model,
+        "trainer": trainer,
+    }
+    if loggers:
+        log_hyperparameters(object_dict)
+
+    log.info("Starting training...")
+    trainer.fit(model=model, datamodule=datamodule, ckpt_path=cfg.get("ckpt_path"))
+
+    # 5. Évaluation spécifique Survie (Pycox)
+    log.info("Starting survival evaluation...")
+    
+    results_concordance = []
+    results_brier = []
+    nb_tests = 100 # Nombre de simulations pour la stabilité
+
+    # On passe le modèle au wrapper CoxPH
+    survival_model = CoxPH(model)
+
+    # On utilise les données préparées par le datamodule
+    # .train_graph et .val_graph ont été créés lors du datamodule.setup()
+    train_x = datamodule.train_graph.x
+    train_y_durations = datamodule.train_graph.y[..., 0]
+    train_y_events = datamodule.train_graph.y[..., 1]
+    
+    val_x = datamodule.val_graph.x
+    val_y = datamodule.val_graph.y
+    val_idx = datamodule.val_graph.val_idx # Les indices de test stockés dans le graph de val
+
+    # Calcul de la baseline hazard une seule fois (ou dans la boucle si besoin de stochasticité)
+    _ = survival_model.compute_baseline_hazards(train_x, (train_y_durations, train_y_events))
+
+    for i in range(nb_tests):
+        # Prédiction des fonctions de survie
+        surv = survival_model.predict_surv_df(val_x)
         
-        if "wandb" in cfg.logger:
-            # On définit un ID unique pour ce run de fold
-            cfg.logger.wandb.group = f"exp_{cfg.model._target_.split('.')[-1]}" # Groupe commun
-            cfg.logger.wandb.name = f"fold_{i}" # Nom spécifique au fold
-            cfg.logger.wandb.job_type = "cross-val"
+        # Extraction des durées et évènements réels pour le calcul des métriques
+        durations_test = val_y[..., 0].numpy()
+        events_test = val_y[..., 1].numpy()
 
-        logger: list[Logger] = instantiate_loggers(cfg.get("logger"))
+        # Evaluation sur le split de validation uniquement
+        ev = EvalSurv(
+            surv[val_idx], 
+            durations_test[val_idx], 
+            events_test[val_idx], 
+            censor_surv='km'
+        )
+        
+        # Création de la grille temporelle pour le Brier Score
+        time_grid = np.linspace(durations_test[val_idx].min(), durations_test[val_idx].max(), 100)
 
-        trainer: Trainer = hydra.utils.instantiate(cfg.trainer, logger=logger)
+        results_concordance.append(ev.concordance_td())
+        results_brier.append(ev.integrated_brier_score(time_grid))
 
-        trainer.fit(model=model, datamodule=datamodule, ckpt_path=cfg.get("ckpt_path"))
+    # Calcul des moyennes finales pour ce split
+    mean_cindex = np.mean(results_concordance)
+    mean_brier = np.mean(results_brier)
+    std_cindex = np.std(results_concordance) # Optionnel mais utile
 
-        results_concordance = []
-        results_brier = []
-        nb_tests = 100
+    # 2. Préparation du dictionnaire de métriques
+    metrics = {
+        "test/c_index": mean_cindex,
+        "test/brier_score": mean_brier,
+        "test/c_index_std": std_cindex,
+        "fold_index": cfg.data.split_index  # Pour filtrer facilement dans l'UI WandB
+    }
 
-        survival_model = CoxPH(model)
-
-        for _ in range(nb_tests):
-            _ = survival_model.compute_baseline_hazards(datamodule.train_graph.x, (datamodule.train_graph.y[...,0],datamodule.train_graph.y[...,1]))
-            surv = survival_model.predict_surv_df(datamodule.val_graph.x)
-            y_test = datamodule.val_graph.y
-            durations_test, events_test = y_test[...,0].numpy(), y_test[..., 1].numpy()
-
-            ev = EvalSurv(surv[datamodule.val_graph.val_idx], durations_test[datamodule.val_graph.val_idx], events_test[datamodule.val_graph.val_idx], censor_surv='km')
-            time_grid = np.linspace(durations_test.min(), durations_test.max(), 100)
-
-            results_concordance.append(ev.concordance_td())
-            results_brier.append(ev.integrated_brier_score(time_grid))
-
-        all_results_concordance.append(np.mean(results_concordance))
-        all_results_brier.append(np.mean(results_brier))
-
-    print(f"C-index ||| mean: {np.mean(all_results_concordance)} | std: {np.std(all_results_concordance)}")
-    print(f"Brier ||| mean: {np.mean(all_results_brier)} | std: {np.std(all_results_brier)}")
+    # 3. Envoi au(x) logger(s)
+    if loggers:
+        for logger in loggers:
+            # On utilise log_metrics pour envoyer les résultats de fin de run
+            logger.log_metrics(metrics)
+            
+    log.info(f"Final Results for Fold {cfg.data.split_index} sent to loggers.")
+    
+    return mean_cindex
 
 if __name__ == "__main__":
     main()
-
