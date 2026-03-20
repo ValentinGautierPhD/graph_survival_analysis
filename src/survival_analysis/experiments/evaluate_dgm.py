@@ -40,7 +40,6 @@ def main(cfg: DictConfig) -> Optional[float]:
     # 3. Gestion spécifique du Logger (W&B)
     if "wandb" in cfg.logger:
         # On injecte dynamiquement le fold dans le nom du run
-        cfg.logger.wandb.group = f"exp_{cfg.model._target_.split('.')[-1]}"
         cfg.logger.wandb.name = f"fold_{cfg.data.split_index}"
         cfg.logger.wandb.job_type = "single-fold"
 
