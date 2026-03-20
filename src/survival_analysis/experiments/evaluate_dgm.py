@@ -2,6 +2,7 @@ import hydra
 import wandb
 import numpy as np
 import matplotlib.pyplot as plt
+import plotly.express as px
 from omegaconf import DictConfig
 from typing import Optional
 from pycox.models import CoxPH
@@ -17,38 +18,24 @@ from ..utils import (
 
 log = RankedLogger(__name__, rank_zero_only=True)
 
-def plot_edge_probs_matplotlib(pi, bins=100, log_scale=True):
-
+def plot_edge_probs(pi, bins=100, log_scale=True):
     
-    # 3. Création de la figure
-    fig = plt.figure(figsize=(10, 6))
-    
-    # Histogramme
-    n_counts, bins_edges, patches = plt.hist(
-        pi, 
-        bins=bins, 
-        color='#3498db', 
-        edgecolor='black', 
-        alpha=0.7
+    fig = px.histogram(
+        x=pi,
+        nbins=bins,
+        log_y=log_scale,
+        title="Distribution des probabilités des arêtes",
+        labels={"x": "Probabilité", "y": "Nombre d'arêtes"},
     )
-    
-    if log_scale:
-        plt.yscale('log')
-        plt.ylabel("Nombre d'arêtes (Échelle Log)")
-    else:
-        plt.ylabel("Nombre d'arêtes")
 
-    plt.title("Distribution des probabilités des arêtes", fontsize=14)
-    plt.xlabel("Probabilité")
-    plt.grid(axis='y', linestyle='--', alpha=0.5)
-    
-    # Ajout d'une ligne pour la moyenne (optionnel)
-    plt.axvline(pi.mean(), color='red', linestyle='dashed', linewidth=1, label=f'Moyenne: {pi.mean():.4f}')
-    plt.legend()
-
-    plt.tight_layout()
+    fig.add_vline(
+        x=pi.mean(),
+        line=dict(color='red', dash='dash', width=1),
+        annotation_text=f'Moyenne: {pi.mean():.4f}',
+    )
 
     return fig
+
 
 @hydra.main(version_base="1.3", config_path="../../../configs", config_name="experiment/eval_dgm.yaml")
 def main(cfg: DictConfig) -> Optional[float]:
@@ -146,7 +133,7 @@ def main(cfg: DictConfig) -> Optional[float]:
     mean_brier = np.mean(results_brier)
     std_cindex = np.std(results_concordance) # Optionnel mais utile
 
-    fig = plot_edge_probs_matplotlib(pi)
+    fig = plot_edge_probs(pi, log_scale=False)
 
     # 2. Préparation du dictionnaire de métriques
     metrics = {
@@ -154,8 +141,9 @@ def main(cfg: DictConfig) -> Optional[float]:
         "test/brier_score": mean_brier,
         "test/c_index_std": std_cindex,
         "fold_index": cfg.data.split_index, # Pour filtrer facilement dans l'UI WandB
-        "probs": fig
     }
+    if "wandb" in cfg.logger:
+        metrics["edge_probs"] = fig
 
     # 3. Envoi au(x) logger(s)
     if loggers:
