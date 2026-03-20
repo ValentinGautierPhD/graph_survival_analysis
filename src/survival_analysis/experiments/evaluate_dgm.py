@@ -1,7 +1,7 @@
 import hydra
 import wandb
-import torch
 import numpy as np
+import matplotlib.pyplot as plt
 from omegaconf import DictConfig
 from typing import Optional
 from pycox.models import CoxPH
@@ -16,6 +16,39 @@ from ..utils import (
 )
 
 log = RankedLogger(__name__, rank_zero_only=True)
+
+def plot_edge_probs_matplotlib(pi, bins=100, log_scale=True):
+
+    
+    # 3. Création de la figure
+    fig = plt.figure(figsize=(10, 6))
+    
+    # Histogramme
+    n_counts, bins_edges, patches = plt.hist(
+        pi, 
+        bins=bins, 
+        color='#3498db', 
+        edgecolor='black', 
+        alpha=0.7
+    )
+    
+    if log_scale:
+        plt.yscale('log')
+        plt.ylabel("Nombre d'arêtes (Échelle Log)")
+    else:
+        plt.ylabel("Nombre d'arêtes")
+
+    plt.title("Distribution des probabilités des arêtes", fontsize=14)
+    plt.xlabel("Probabilité")
+    plt.grid(axis='y', linestyle='--', alpha=0.5)
+    
+    # Ajout d'une ligne pour la moyenne (optionnel)
+    plt.axvline(pi.mean(), color='red', linestyle='dashed', linewidth=1, label=f'Moyenne: {pi.mean():.4f}')
+    plt.legend()
+
+    plt.tight_layout()
+
+    return fig
 
 @hydra.main(version_base="1.3", config_path="../../../configs", config_name="experiment/eval_dgm.yaml")
 def main(cfg: DictConfig) -> Optional[float]:
@@ -71,6 +104,7 @@ def main(cfg: DictConfig) -> Optional[float]:
 
     # On passe le modèle au wrapper CoxPH
     survival_model = CoxPH(model)
+    pi = model.pi.cpu().numpy().flatten()
 
     # On utilise les données préparées par le datamodule
     # .train_graph et .val_graph ont été créés lors du datamodule.setup()
@@ -112,12 +146,15 @@ def main(cfg: DictConfig) -> Optional[float]:
     mean_brier = np.mean(results_brier)
     std_cindex = np.std(results_concordance) # Optionnel mais utile
 
+    fig = plot_edge_probs_matplotlib(pi)
+
     # 2. Préparation du dictionnaire de métriques
     metrics = {
         "test/c_index": mean_cindex,
         "test/brier_score": mean_brier,
         "test/c_index_std": std_cindex,
-        "fold_index": cfg.data.split_index  # Pour filtrer facilement dans l'UI WandB
+        "fold_index": cfg.data.split_index, # Pour filtrer facilement dans l'UI WandB
+        "probs": fig
     }
 
     # 3. Envoi au(x) logger(s)
