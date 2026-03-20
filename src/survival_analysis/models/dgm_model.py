@@ -119,7 +119,7 @@ class MinimalDGM(pl.LightningModule):
 class SurvivalDGM(pl.LightningModule):
     def __init__(self, in_dim, hid_dim, optimizer, scheduler=None):
         super().__init__()
-        self.lambda1 = 1
+        self.lambda1 = 0
         self.lambda2 = 0
         self.partial_optimizer = optimizer
         self.partial_scheduler = scheduler
@@ -127,9 +127,7 @@ class SurvivalDGM(pl.LightningModule):
         
         self.phi = nn.Linear(in_dim, hid_dim)
         
-        # self.W = nn.Parameter(torch.triu(torch.randn(hid_dim, hid_dim) * 0.1))
         self.W = nn.Parameter(torch.randn(hid_dim, hid_dim) * 0.1)
-        self.W_message = nn.Parameter(torch.triu(torch.randn(hid_dim, hid_dim) * 0.1))
         # self.g = nn.Linear(hid_dim, hid_dim)
         # self.g = GCNConv(hid_dim, hid_dim)
         self.g = GATv2Conv(hid_dim, hid_dim, heads=1, edge_dim=1, concat=False)
@@ -151,11 +149,17 @@ class SurvivalDGM(pl.LightningModule):
         pi = torch.sigmoid(logits)
 
         # binary concrete
-        mask = binary_concrete(logits, tau=tau, hard=True)
+        mask_raw = binary_concrete(logits, tau=tau, hard=True)
+
+        # taking upper part of mask for symetrization
+        upper_mask = torch.triu(mask_raw, diagonal=1)
+
+        # On symétrise : l'arête (i,j) devient égale à l'arête (j,i)
+        adjacency = upper_mask + upper_mask.t()
+
         # weights = z @ self.W_message @ z.T
-        adjacency =  mask
-        self.A = pi
-        self.mask = mask
+        self.pi = pi
+        self.adjacency = adjacency
         # self.weights = weights
 
         # Pytorch geometric format
