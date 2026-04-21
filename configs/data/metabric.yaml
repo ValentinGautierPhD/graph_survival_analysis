@@ -1,0 +1,7 @@
+split_index: 0
+json_splits_path: "/home/valentin/data/metabric/splits.json"
+
+datamodule:
+  _target_: survival_analysis.data.metabric_datamodule.MetabricGraphSurvivalDataModule
+  json_splits_path: ${data.json_splits_path}
+  split_index: ${data.split_index}
