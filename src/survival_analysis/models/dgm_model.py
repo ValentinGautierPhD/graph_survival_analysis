@@ -117,15 +117,17 @@ class MinimalDGM(pl.LightningModule):
 
 
 class SurvivalDGM(pl.LightningModule):
-    def __init__(self, in_dim, hid_dim, optimizer, scheduler=None):
+    def __init__(self, in_dim, hid_dim, optimizer, scheduler=None, tau=0.05):
         super().__init__()
         self.lambda1 = 0
         self.lambda2 = 0
+        self.tau = tau 
         self.partial_optimizer = optimizer
         self.partial_scheduler = scheduler
         out_dim = 1
         
         self.phi = nn.Linear(in_dim, hid_dim)
+        self.phi_prime = nn.Linear(in_dim, hid_dim)
         
         self.W = nn.Parameter(torch.randn(hid_dim, hid_dim) * 0.1)
         # self.g = nn.Linear(hid_dim, hid_dim)
@@ -135,21 +137,24 @@ class SurvivalDGM(pl.LightningModule):
         self.loss = CoxPHLoss()
 
 
-    def _forward_full(self,x, tau=0.5):
+    def _forward_full(self,x):
         # x: [n, d]
         z = self.phi(x)  # [n, h]
         # z = torch.nn.functional.normalize(z, dim=-1)
         z = torch.nn.functional.relu(z)
 
+        z_prime = self.phi_prime(x)
+        z_prime = torch.nn.functional.relu(z_prime)
+        
         # logits edges
         W_sym = 0.5 * (self.W + self.W.T)
         # W_message_sym = 0.5 * (self.W_message + self.W_message.T)
         logits = z @ W_sym @ z.T  / np.sqrt(z.size(-1)) # [n, n]
         # weights = z @ 
-        pi = torch.sigmoid(logits)
+        pi = torch.sigmoid(logits/self.tau)
 
         # binary concrete
-        mask_raw = binary_concrete(logits, tau=tau, hard=True)
+        mask_raw = binary_concrete(logits, tau=self.tau, hard=True)
 
         # taking upper part of mask for symetrization
         upper_mask = torch.triu(mask_raw, diagonal=1)
@@ -166,7 +171,7 @@ class SurvivalDGM(pl.LightningModule):
         edge_index, edge_attr = matrix_to_list(adjacency)
         
         # messages
-        h = self.g(z, edge_index=edge_index, edge_attr=edge_attr)
+        h = self.g(z_prime, edge_index=edge_index, edge_attr=edge_attr)
         # h = self.g(z, edge_index=edge_index)
         # h = adjacency @ z
         # h = nn.functional.relu(h)

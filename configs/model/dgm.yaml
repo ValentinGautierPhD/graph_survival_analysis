@@ -15,3 +15,4 @@ optimizer:
 
 in_dim: null
 hid_dim: 10
+tau: 0.05
