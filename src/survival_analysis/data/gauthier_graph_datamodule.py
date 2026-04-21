@@ -83,7 +83,8 @@ class GauthierGraphDataModule(LightningDataModule):
 
 
 class GauthierGraphSurvivalDataModule(GauthierGraphDataModule):
-    def __init__(self, csv_path: str, json_splits_path: str, split_index: int = 0):
+    def __init__(self, csv_path: str, json_splits_path: str, split_index: int = 0, select=None):
+        self.select = select
         super().__init__(csv_path, json_splits_path, split_index)
 
     def setup(self, stage: Optional[str] = None):
@@ -95,7 +96,13 @@ class GauthierGraphSurvivalDataModule(GauthierGraphDataModule):
         # Features
         x_raw = df_raw.drop(
             columns=["patients_id", "pfs", "pfs_event", "pfs_2_years"]
-        ).to_numpy(dtype=np.float32)
+        )
+
+        # Allows features selection
+        if self.select is not None:
+            x_raw = x_raw[self.select]
+
+        x_raw.to_numpy(dtype=np.float32)
         
         scaler = StandardScaler()
         x_scaled = scaler.fit_transform(x_raw)

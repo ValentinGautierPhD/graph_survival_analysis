@@ -10,3 +10,4 @@ datamodule:
   csv_path: ${data.csv_path}
   json_splits_path: ${data.json_splits_path}
   split_index: ${data.split_index}
+  select: null
