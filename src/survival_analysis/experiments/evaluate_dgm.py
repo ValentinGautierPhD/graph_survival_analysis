@@ -36,6 +36,52 @@ def plot_edge_probs(pi, bins=100, log_scale=True):
 
     return fig
 
+def evaluate(datamodule, survival_model, nb_tests=100):
+
+    results_concordance = []
+    results_brier = []
+
+    # On utilise les données préparées par le datamodule
+    # .train_graph et .val_graph ont été créés lors du datamodule.setup()
+    train_x = datamodule.train_graph.x
+    train_y_durations = datamodule.train_graph.y[..., 0]
+    train_y_events = datamodule.train_graph.y[..., 1]
+    
+    val_x = datamodule.val_graph.x
+    val_y = datamodule.val_graph.y
+    val_idx = datamodule.val_graph.val_idx.numpy() # Les indices de test stockés dans le graph de val
+
+
+    
+    for i in range(nb_tests):
+        # Prédiction des fonctions de survie
+        _ = survival_model.compute_baseline_hazards(train_x, (train_y_durations, train_y_events))
+        surv = survival_model.predict_surv_df(val_x)
+        
+        # Extraction des durées et évènements réels pour le calcul des métriques
+        durations_test = val_y[..., 0].numpy()
+        events_test = val_y[..., 1].numpy()
+
+        # Evaluation sur le split de validation uniquement
+        ev = EvalSurv(
+            surv[val_idx], 
+            durations_test[val_idx], 
+            events_test[val_idx], 
+            censor_surv='km'
+        )
+        
+        # Création de la grille temporelle pour le Brier Score
+        time_grid = np.linspace(durations_test[val_idx].min(), durations_test[val_idx].max(), 100)
+
+        results_concordance.append(ev.concordance_td())
+        results_brier.append(ev.integrated_brier_score(time_grid))
+
+    # Calcul des moyennes finales pour ce split
+    mean_cindex = np.mean(results_concordance)
+    mean_brier = np.mean(results_brier)
+    std_cindex = np.std(results_concordance) # Optionnel mais utile
+
+    return mean_cindex, mean_brier, std_cindex
 
 @hydra.main(version_base="1.3", config_path="../../../configs", config_name="experiment/eval_dgm.yaml")
 def main(cfg: DictConfig) -> Optional[float]:
@@ -85,53 +131,11 @@ def main(cfg: DictConfig) -> Optional[float]:
     # 5. Évaluation spécifique Survie (Pycox)
     log.info("Starting survival evaluation...")
     
-    results_concordance = []
-    results_brier = []
-    nb_tests = 100 # Nombre de simulations pour la stabilité
-
     # On passe le modèle au wrapper CoxPH
     survival_model = CoxPH(model)
     pi = model.pi.cpu().numpy().flatten()
 
-    # On utilise les données préparées par le datamodule
-    # .train_graph et .val_graph ont été créés lors du datamodule.setup()
-    train_x = datamodule.train_graph.x
-    train_y_durations = datamodule.train_graph.y[..., 0]
-    train_y_events = datamodule.train_graph.y[..., 1]
-    
-    val_x = datamodule.val_graph.x
-    val_y = datamodule.val_graph.y
-    val_idx = datamodule.val_graph.val_idx # Les indices de test stockés dans le graph de val
-
-    # Calcul de la baseline hazard une seule fois (ou dans la boucle si besoin de stochasticité)
-    _ = survival_model.compute_baseline_hazards(train_x, (train_y_durations, train_y_events))
-
-    for i in range(nb_tests):
-        # Prédiction des fonctions de survie
-        surv = survival_model.predict_surv_df(val_x)
-        
-        # Extraction des durées et évènements réels pour le calcul des métriques
-        durations_test = val_y[..., 0].numpy()
-        events_test = val_y[..., 1].numpy()
-
-        # Evaluation sur le split de validation uniquement
-        ev = EvalSurv(
-            surv[val_idx], 
-            durations_test[val_idx], 
-            events_test[val_idx], 
-            censor_surv='km'
-        )
-        
-        # Création de la grille temporelle pour le Brier Score
-        time_grid = np.linspace(durations_test[val_idx].min(), durations_test[val_idx].max(), 100)
-
-        results_concordance.append(ev.concordance_td())
-        results_brier.append(ev.integrated_brier_score(time_grid))
-
-    # Calcul des moyennes finales pour ce split
-    mean_cindex = np.mean(results_concordance)
-    mean_brier = np.mean(results_brier)
-    std_cindex = np.std(results_concordance) # Optionnel mais utile
+    mean_cindex, mean_brier, std_cindex = evaluate(datamodule, survival_model, nb_tests=100)
 
     fig = plot_edge_probs(pi, log_scale=False)
 
