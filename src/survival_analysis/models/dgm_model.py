@@ -127,7 +127,6 @@ class SurvivalDGM(pl.LightningModule):
         out_dim = 1
         
         self.phi = nn.Linear(in_dim, hid_dim)
-        self.phi_prime = nn.Linear(in_dim, hid_dim)
         
         self.W = nn.Parameter(torch.randn(hid_dim, hid_dim) * 0.1)
         # self.g = nn.Linear(hid_dim, hid_dim)
@@ -143,9 +142,6 @@ class SurvivalDGM(pl.LightningModule):
         # z = torch.nn.functional.normalize(z, dim=-1)
         z = torch.nn.functional.relu(z)
 
-        z_prime = self.phi_prime(x)
-        z_prime = torch.nn.functional.relu(z_prime)
-        
         # logits edges
         W_sym = 0.5 * (self.W + self.W.T)
         # W_message_sym = 0.5 * (self.W_message + self.W_message.T)
@@ -171,7 +167,7 @@ class SurvivalDGM(pl.LightningModule):
         edge_index, edge_attr = matrix_to_list(adjacency)
         
         # messages
-        h = self.g(z_prime, edge_index=edge_index, edge_attr=edge_attr)
+        h = self.g(z, edge_index=edge_index, edge_attr=edge_attr)
         # h = self.g(z, edge_index=edge_index)
         # h = adjacency @ z
         # h = nn.functional.relu(h)
