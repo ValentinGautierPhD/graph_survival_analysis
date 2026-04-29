@@ -104,8 +104,8 @@ class GauthierGraphSurvivalDataModule(GauthierGraphDataModule):
 
         x_raw.to_numpy(dtype=np.float32)
         
-        scaler = StandardScaler()
-        x_scaled = scaler.fit_transform(x_raw)
+        self.scaler = StandardScaler()
+        x_scaled = self.scaler.fit_transform(x_raw)
         
         # Labels spécifiques à la Survie (Time, Event)
         y_survival = df_raw[["pfs", "pfs_event"]].to_numpy(dtype=np.float32)
