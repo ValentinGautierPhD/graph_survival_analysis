@@ -124,6 +124,7 @@ class SurvivalDGM(pl.LightningModule):
         self.tau = tau 
         self.partial_optimizer = optimizer
         self.partial_scheduler = scheduler
+        self.training_mode = True
         out_dim = 1
         
         self.phi = nn.Linear(in_dim, hid_dim)
@@ -149,8 +150,11 @@ class SurvivalDGM(pl.LightningModule):
         # weights = z @ 
         pi = torch.sigmoid(logits/self.tau)
 
-        # binary concrete
-        mask_raw = binary_concrete(logits, tau=self.tau, hard=True)
+        if self.training_mode:
+            # binary concrete
+            mask_raw = binary_concrete(logits, tau=self.tau, hard=True)
+        else:
+            mask_raw = ((pi)>0.5).int()
 
         # taking upper part of mask for symetrization
         upper_mask = torch.triu(mask_raw, diagonal=1)
