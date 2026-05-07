@@ -83,6 +83,51 @@ def evaluate(datamodule, survival_model, nb_tests=100):
 
     return mean_cindex, mean_brier, std_cindex
 
+
+def evaluate_bis(datamodule, survival_model, nb_tests=100):
+
+    # On utilise les données préparées par le datamodule
+    # .train_graph et .val_graph ont été créés lors du datamodule.setup()
+    train_x = datamodule.train_graph.x
+    train_y_durations = datamodule.train_graph.y[..., 0]
+    train_y_events = datamodule.train_graph.y[..., 1]
+    
+    val_x = datamodule.val_graph.x
+    val_y = datamodule.val_graph.y
+    val_idx = datamodule.val_graph.val_idx.numpy() # Les indices de test stockés dans le graph de val
+
+    survs = []
+    
+    for i in range(nb_tests):
+        # Prédiction des fonctions de survie
+        _ = survival_model.compute_baseline_hazards(train_x, (train_y_durations, train_y_events))
+        survs.append(survival_model.predict_surv_df(val_x))
+
+
+    surv = sum(survs)/nb_tests
+
+    # Extraction des durées et évènements réels pour le calcul des métriques
+    durations_test = val_y[..., 0].numpy()
+    events_test = val_y[..., 1].numpy()
+
+    # Evaluation sur le split de validation uniquement
+    ev = EvalSurv(
+        surv[val_idx], 
+        durations_test[val_idx], 
+        events_test[val_idx], 
+        censor_surv='km'
+    )
+
+    # Création de la grille temporelle pour le Brier Score
+    time_grid = np.linspace(durations_test[val_idx].min(), durations_test[val_idx].max(), 100)
+
+    c_index = ev.concordance_td()
+    brier = ev.integrated_brier_score(time_grid)
+
+    # Calcul des moyennes finales pour ce split
+    return c_index, brier
+
+
 @hydra.main(version_base="1.3", config_path="../../../configs", config_name="experiment/eval_dgm.yaml")
 def main(cfg: DictConfig) -> Optional[float]:
     """
@@ -135,8 +180,10 @@ def main(cfg: DictConfig) -> Optional[float]:
     survival_model = CoxPH(model)
     pi = model.pi.cpu().numpy().flatten()
 
-    mean_cindex, mean_brier, std_cindex = evaluate(datamodule, survival_model, nb_tests=100)
-
+    # mean_cindex, mean_brier, std_cindex = evaluate(datamodule, survival_model, nb_tests=100)
+    mean_cindex, mean_brier = evaluate_bis(datamodule, survival_model, nb_tests=100)
+    std_cindex = 0
+    
     fig = plot_edge_probs(pi, log_scale=False)
 
     # 2. Préparation du dictionnaire de métriques
