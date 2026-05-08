@@ -2,11 +2,8 @@ import hydra
 import wandb
 import numpy as np
 import matplotlib.pyplot as plt
-import plotly.express as px
 from omegaconf import DictConfig
 from typing import Optional
-from pycox.models import CoxPH
-from pycox.evaluation import EvalSurv
 from lightning.pytorch import LightningModule, Trainer, LightningDataModule
 from lightning.pytorch.loggers import Logger
 
@@ -17,115 +14,6 @@ from ..utils import (
 )
 
 log = RankedLogger(__name__, rank_zero_only=True)
-
-def plot_edge_probs(pi, bins=100, log_scale=True):
-    
-    fig = px.histogram(
-        x=pi,
-        nbins=bins,
-        log_y=log_scale,
-        title="Distribution des probabilités des arêtes",
-        labels={"x": "Probabilité", "y": "Nombre d'arêtes"},
-    )
-
-    fig.add_vline(
-        x=pi.mean(),
-        line=dict(color='red', dash='dash', width=1),
-        annotation_text=f'Moyenne: {pi.mean():.4f}',
-    )
-
-    return fig
-
-def evaluate(datamodule, survival_model, nb_tests=100):
-
-    results_concordance = []
-    results_brier = []
-
-    # On utilise les données préparées par le datamodule
-    # .train_graph et .val_graph ont été créés lors du datamodule.setup()
-    train_x = datamodule.train_graph.x
-    train_y_durations = datamodule.train_graph.y[..., 0]
-    train_y_events = datamodule.train_graph.y[..., 1]
-    
-    val_x = datamodule.val_graph.x
-    val_y = datamodule.val_graph.y
-    val_idx = datamodule.val_graph.val_idx.numpy() # Les indices de test stockés dans le graph de val
-
-
-    
-    for i in range(nb_tests):
-        # Prédiction des fonctions de survie
-        _ = survival_model.compute_baseline_hazards(train_x, (train_y_durations, train_y_events))
-        surv = survival_model.predict_surv_df(val_x)
-        
-        # Extraction des durées et évènements réels pour le calcul des métriques
-        durations_test = val_y[..., 0].numpy()
-        events_test = val_y[..., 1].numpy()
-
-        # Evaluation sur le split de validation uniquement
-        ev = EvalSurv(
-            surv[val_idx], 
-            durations_test[val_idx], 
-            events_test[val_idx], 
-            censor_surv='km'
-        )
-        
-        # Création de la grille temporelle pour le Brier Score
-        time_grid = np.linspace(durations_test[val_idx].min(), durations_test[val_idx].max(), 100)
-
-        results_concordance.append(ev.concordance_td())
-        results_brier.append(ev.integrated_brier_score(time_grid))
-
-    # Calcul des moyennes finales pour ce split
-    mean_cindex = np.mean(results_concordance)
-    mean_brier = np.mean(results_brier)
-    std_cindex = np.std(results_concordance) # Optionnel mais utile
-
-    return mean_cindex, mean_brier, std_cindex
-
-
-def evaluate_bis(datamodule, survival_model, nb_tests=100):
-
-    # On utilise les données préparées par le datamodule
-    # .train_graph et .val_graph ont été créés lors du datamodule.setup()
-    train_x = datamodule.train_graph.x
-    train_y_durations = datamodule.train_graph.y[..., 0]
-    train_y_events = datamodule.train_graph.y[..., 1]
-    
-    val_x = datamodule.val_graph.x
-    val_y = datamodule.val_graph.y
-    val_idx = datamodule.val_graph.val_idx.numpy() # Les indices de test stockés dans le graph de val
-
-    survs = []
-    
-    for i in range(nb_tests):
-        # Prédiction des fonctions de survie
-        _ = survival_model.compute_baseline_hazards(train_x, (train_y_durations, train_y_events))
-        survs.append(survival_model.predict_surv_df(val_x))
-
-
-    surv = sum(survs)/nb_tests
-
-    # Extraction des durées et évènements réels pour le calcul des métriques
-    durations_test = val_y[..., 0].numpy()
-    events_test = val_y[..., 1].numpy()
-
-    # Evaluation sur le split de validation uniquement
-    ev = EvalSurv(
-        surv[val_idx], 
-        durations_test[val_idx], 
-        events_test[val_idx], 
-        censor_surv='km'
-    )
-
-    # Création de la grille temporelle pour le Brier Score
-    time_grid = np.linspace(durations_test[val_idx].min(), durations_test[val_idx].max(), 100)
-
-    c_index = ev.concordance_td()
-    brier = ev.integrated_brier_score(time_grid)
-
-    # Calcul des moyennes finales pour ce split
-    return c_index, brier
 
 
 @hydra.main(version_base="1.3", config_path="../../../configs", config_name="experiment/eval_dgm.yaml")
@@ -173,28 +61,9 @@ def main(cfg: DictConfig) -> Optional[float]:
     log.info("Starting training...")
     trainer.fit(model=model, datamodule=datamodule, ckpt_path=cfg.get("ckpt_path"))
 
-    # 5. Évaluation spécifique Survie (Pycox)
     log.info("Starting survival evaluation...")
-    
-    # On passe le modèle au wrapper CoxPH
-    survival_model = CoxPH(model)
-    pi = model.pi.cpu().numpy().flatten()
-
-    # mean_cindex, mean_brier, std_cindex = evaluate(datamodule, survival_model, nb_tests=100)
-    mean_cindex, mean_brier = evaluate_bis(datamodule, survival_model, nb_tests=100)
-    std_cindex = 0
-    
-    fig = plot_edge_probs(pi, log_scale=False)
-
-    # 2. Préparation du dictionnaire de métriques
-    metrics = {
-        "test/c_index": mean_cindex,
-        "test/brier_score": mean_brier,
-        "test/c_index_std": std_cindex,
-        "fold_index": cfg.data.split_index, # Pour filtrer facilement dans l'UI WandB
-    }
-    if "wandb" in cfg.logger:
-        metrics["edge_probs"] = fig
+    metrics = model.evaluate(datamodule)
+    metrics["fold_index"] = cfg.data.split_index  # injecté ici, pas dans le modèle
 
     # 3. Envoi au(x) logger(s)
     if loggers:
@@ -207,7 +76,7 @@ def main(cfg: DictConfig) -> Optional[float]:
     if "wandb" in cfg.logger:
         wandb.finish()   
 
-    return mean_cindex
+    return 1
 
 if __name__ == "__main__":
     main()
