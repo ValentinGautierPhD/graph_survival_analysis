@@ -64,7 +64,7 @@ class SurvivalDGM(pl.LightningModule):
         # messages
         h = self.g(z, edge_index=edge_index, edge_attr=edge_attr)
         # skip
-        # h = h + z
+        # h = z
         out = self.out(h)
         
         return out, pi
@@ -146,7 +146,6 @@ class SurvivalDGM(pl.LightningModule):
         return {
             "test/c_index":    mean_cindex,
             "test/brier_score": mean_brier,
-            "test/c_index_std": 0,
             "fold_index":       None,  # sera injecté par le script principal
             "edge_probs":       fig,   # figure wandb, spécifique à ce modèle
         }
