@@ -11,10 +11,10 @@ from pycox.evaluation import EvalSurv
 import plotly.express as px
 
 class SurvivalDGM(pl.LightningModule):
-    def __init__(self, in_dim, hid_dim, optimizer, scheduler=None, tau=0.05):
+    def __init__(self, in_dim, hid_dim, optimizer, scheduler=None, tau=0.05, lambda1=0.01, lambda2=0):
         super().__init__()
-        self.lambda1 = 0
-        self.lambda2 = 0
+        self.lambda1 = lambda1
+        self.lambda2 = lambda2
         self.tau = tau 
         self.partial_optimizer = optimizer
         self.partial_scheduler = scheduler
@@ -37,11 +37,15 @@ class SurvivalDGM(pl.LightningModule):
         # z = torch.nn.functional.normalize(z, dim=-1)
         z = torch.nn.functional.relu(z)
 
+        # dists, _ = pairwise_euclidean_distances(z)
+        # logits = torch.exp(-dists)
+        
         # logits edges
         W_sym = 0.5 * (self.W + self.W.T)
         logits = z @ W_sym @ z.T  / np.sqrt(z.size(-1)) # [n, n]
-        pi = torch.sigmoid(logits/self.tau)
-
+        pi = torch.sigmoid(logits)
+        self.logits = logits
+        
         if self.training_mode:
             # binary concrete
             mask_raw = binary_concrete(logits, tau=self.tau, hard=True)

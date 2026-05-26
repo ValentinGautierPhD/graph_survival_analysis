@@ -19,6 +19,7 @@ dependencies = [
     "scikit-learn>=1.7.2",
     "scikit-survival>=0.26.0",
     "tabpfn>=7.1.1",
+    "tabpfn-extensions[embedding]>=0.4.1",
     "torch>=2.8.0",
     "torch-geometric>=2.6.1",
     "wandb>=0.25.1",
