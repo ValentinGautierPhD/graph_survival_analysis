@@ -1,0 +1,8 @@
+defaults:
+  - early_stopping
+  - _self_
+
+early_stopping:
+  monitor: "val/loss"
+  patience: 100
+  mode: "min"

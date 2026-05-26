@@ -4,12 +4,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from omegaconf import DictConfig
 from typing import Optional
-from lightning.pytorch import LightningModule, Trainer, LightningDataModule
+from lightning.pytorch import Callback, LightningModule, Trainer, LightningDataModule
 from lightning.pytorch.loggers import Logger
 
 from ..utils import (
     RankedLogger,
     instantiate_loggers,
+    instantiate_callbacks,
     log_hyperparameters,
 )
 
@@ -36,6 +37,9 @@ def main(cfg: DictConfig) -> Optional[float]:
     log.info(f"Instantiating model <{cfg.model._target_}>")
     model: LightningModule = hydra.utils.instantiate(cfg.model, in_dim=datamodule.in_dim)
 
+    log.info("Instantiating callbacks...")
+    callbacks: list[Callback] = instantiate_callbacks(cfg.get("callbacks"))
+    
     # 3. Gestion spécifique du Logger (W&B)
     if "wandb" in cfg.logger:
         # On injecte dynamiquement le fold dans le nom du run
@@ -46,7 +50,7 @@ def main(cfg: DictConfig) -> Optional[float]:
 
     # 4. Instanciation du Trainer et Entraînement
     log.info("Instantiating trainer")
-    trainer: Trainer = hydra.utils.instantiate(cfg.trainer, logger=loggers)
+    trainer: Trainer = hydra.utils.instantiate(cfg.trainer, logger=loggers, callbacks=callbacks)
 
     # Log des hyperparamètres vers le logger
     object_dict = {

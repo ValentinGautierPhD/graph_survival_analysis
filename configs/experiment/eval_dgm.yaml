@@ -6,6 +6,7 @@ defaults:
   - /model: dgm
   - /logger: wandb
   - /trainer: gpu
+  - /callbacks: early_stop_dgm
   - /paths: default
   - /extras: default
   - /hydra: default
