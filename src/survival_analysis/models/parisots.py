@@ -27,7 +27,7 @@ class ParisotsSimple(pl.LightningModule):
         # x: [n, d]
         normalized = F.normalize(x, p=2, dim=1)
         similarity_matrix = torch.mm(normalized, normalized.T)
-        adjacency = (similarity_matrix > 0.5).float()
+        adjacency = F.relu(similarity_matrix)
         adjacency.fill_diagonal_(0)
         
         # Pytorch geometric format
