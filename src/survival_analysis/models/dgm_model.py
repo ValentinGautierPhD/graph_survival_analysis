@@ -16,6 +16,8 @@ class SurvivalDGM(pl.LightningModule):
         self.lambda1 = lambda1
         self.lambda2 = lambda2
         self.tau = tau 
+        self.gamma=-0.1
+        self.zeta=1.1
         self.partial_optimizer = optimizer
         self.partial_scheduler = scheduler
         self.training_mode = True
@@ -43,12 +45,13 @@ class SurvivalDGM(pl.LightningModule):
         # logits edges
         W_sym = 0.5 * (self.W + self.W.T)
         logits = z @ W_sym @ z.T  / np.sqrt(z.size(-1)) # [n, n]
-        pi = torch.sigmoid(logits)
+        # pi = torch.sigmoid(logits)
+        pi = self.hard_concrete(logits, tau=self.tau, deterministic=True)
         self.logits = logits
         
         if self.training_mode:
             # binary concrete
-            mask_raw = binary_concrete(logits, tau=self.tau, hard=True)
+            mask_raw = self.hard_concrete(logits, tau=self.tau, deterministic=False)
         else:
             mask_raw = ((pi)>0.5).int()
 
@@ -56,7 +59,7 @@ class SurvivalDGM(pl.LightningModule):
         upper_mask = torch.triu(mask_raw, diagonal=1)
 
         # On symétrise : l'arête (i,j) devient égale à l'arête (j,i)
-        adjacency = upper_mask + upper_mask.t()
+        adjacency = torch.ones_like(upper_mask) * (upper_mask + upper_mask.t())
 
         self.pi = pi
         self.adjacency = adjacency
@@ -79,7 +82,7 @@ class SurvivalDGM(pl.LightningModule):
         # h = z
         out = self.out(h)
         
-        return out, pi
+        return out, logits
 
     def forward(self, x):
         out, _ = self._forward_full(x)
@@ -89,32 +92,33 @@ class SurvivalDGM(pl.LightningModule):
         eps = 1e-8
         
         # ---- forward PyG
-        pred,pi = self._forward_full(batch.x)
+        pred,logits = self._forward_full(batch.x)
         # pred: [b, n, C]
 
         # ---- reconstruire masque dense
         # y = batch.y
         times, events = batch.y[...,0], batch.y[...,1]
         
-        loss, partial_likelihood, l1_loss, *_ = self.full_loss(pred, times, events, pi)
+        loss, partial_likelihood, l1_loss, l0_loss, *_ = self.full_loss(pred, times, events, logits)
 
         self.log("train/loss", loss, on_step=False, on_epoch=True)
         self.log("train/cox_loss", partial_likelihood, on_step=False, on_epoch=True)
         self.log("train/l1_loss", self.lambda1*l1_loss, on_step=False, on_epoch=True)
+        self.log("train/l0_loss", self.lambda2*l0_loss, on_step=False, on_epoch=True)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
         
-        all_pred, pi = self._forward_full(batch.x)
+        all_pred, logits = self._forward_full(batch.x)
         pred = all_pred[batch.val_idx]
         times, events = batch.y[...,0], batch.y[...,1]
         times, events = times[batch.val_idx], events[batch.val_idx]
 
-        loss, partial_likelihood, *_ = self.full_loss(pred, times, events, pi)
+        loss, partial_likelihood, *_ = self.full_loss(pred, times, events, logits)
         
         self.log("val/loss", loss, on_step=False, on_epoch=True)
-        self.log("val/partial_likelihood", loss, on_step=False, on_epoch=True)
+        self.log("val/partial_likelihood", partial_likelihood, on_step=False, on_epoch=True)
 
         return loss
         
@@ -137,16 +141,17 @@ class SurvivalDGM(pl.LightningModule):
         },
     }
 
-    def full_loss(self, pred, times, events, pi):
-        eps = 1e-8
+    def full_loss(self, pred, times, events, logits):
         partial_likelihood = self.loss(pred, times, events)
-        l1_loss = pi.abs().mean()
-        entropy = -pi * torch.log(pi + eps) - (1 - pi)*torch.log(1 - pi + eps)
-        entropy_loss = entropy.mean()
+        l1_loss = logits.abs().mean()
         
-        loss = partial_likelihood + self.lambda1 * l1_loss + self.lambda2 * entropy_loss
+        #L0 loss
+        second_term = self.tau * torch.log(-torch.ones_like(logits) * self.gamma/self.zeta)
+        l0_loss = torch.mean(torch.sigmoid(logits - second_term))
+        
+        loss = partial_likelihood + self.lambda1 * l1_loss + self.lambda2 * l0_loss
 
-        return loss, partial_likelihood, l1_loss, entropy_loss
+        return loss, partial_likelihood, l1_loss, l0_loss
 
     def evaluate(self, datamodule) -> dict:
         survival_model = CoxPH(self)
@@ -162,6 +167,16 @@ class SurvivalDGM(pl.LightningModule):
             "edge_probs":       fig,   # figure wandb, spécifique à ce modèle
         }
 
+    def hard_concrete(self, logits, tau=1.0, deterministic=False, eps=1e-7):
+        u = torch.rand_like(logits)
+        if not deterministic:
+            logistic_noise = torch.log(u + eps) - torch.log(1 - u + eps)
+        else:
+            logistic_noise = torch.zeros_like(u)
+        y = torch.sigmoid((logits + logistic_noise) / tau) * (self.zeta - self.gamma) + self.gamma
+
+        return torch.minimum(torch.ones_like(y), torch.maximum(torch.zeros_like(y), y))
+
 
 class ClassifDGM(SurvivalDGM):
     def __init__(self, in_dim, hid_dim, optimizer, scheduler=None, tau=0.05, lambda1=0.0, lambda2=0):
@@ -172,14 +187,14 @@ class ClassifDGM(SurvivalDGM):
         eps = 1e-8
         
         # ---- forward PyG
-        pred,pi = self._forward_full(batch.x)
+        pred,logits = self._forward_full(batch.x)
         # pred: [b, n, C]
         
         # ---- reconstruire masque dense
         # y = batch.y
         label = batch.y
         
-        loss, partial_likelihood, l1_loss, *_ = self.full_loss(pred, label, pi)
+        loss, partial_likelihood, l1_loss, *_ = self.full_loss(pred, label, logits)
 
         self.log("train/loss", loss, on_step=False, on_epoch=True)
         self.log("train/BCE_loss", partial_likelihood, on_step=False, on_epoch=True)
@@ -187,11 +202,11 @@ class ClassifDGM(SurvivalDGM):
 
         return loss
 
-    def full_loss(self, pred, label, pi):
+    def full_loss(self, pred, label, logits):
         eps = 1e-8
         partial_likelihood = self.loss(pred, label)
-        l1_loss = pi.abs().mean()
-        entropy = -pi * torch.log(pi + eps) - (1 - pi)*torch.log(1 - pi + eps)
+        l1_loss = logits.abs().mean()
+        entropy = -logits * torch.log(logits + eps) - (1 - logits)*torch.log(1 - logits + eps)
         entropy_loss = entropy.mean()
         
         loss = partial_likelihood + self.lambda1 * l1_loss + self.lambda2 * entropy_loss
@@ -200,11 +215,11 @@ class ClassifDGM(SurvivalDGM):
 
     def validation_step(self, batch, batch_idx):
         
-        all_pred, pi = self._forward_full(batch.x)
+        all_pred, logits = self._forward_full(batch.x)
         pred = all_pred[batch.val_idx]
         label = batch.y[batch.val_idx]
 
-        loss, partial_likelihood, *_ = self.full_loss(pred, label, pi)
+        loss, partial_likelihood, *_ = self.full_loss(pred, label, logits)
         accuracy = ((torch.sigmoid(pred) > 0.5).float() == label).float().mean()
 
         self.log("val/loss", loss, on_step=False, on_epoch=True)
@@ -221,7 +236,7 @@ class ClassifDGM(SurvivalDGM):
         x = datamodule.val_graph.x
 
         all_pred, _ = self._forward_full(x)
-        pi = self.pi.cpu().detach().numpy().flatten()
+        logits = self.logits.cpu().detach().numpy().flatten()
         pred = all_pred[datamodule.val_graph.val_idx]
         label = datamodule.val_graph.y[datamodule.val_graph.val_idx]
 
@@ -240,12 +255,12 @@ class ClassifDGM(SurvivalDGM):
         # Pour tester
         # dm_test_x = (dm_test.val_graph.x - datamodule.train_graph.x.mean(0)) / (datamodule.train_graph.x.std(0) + 1e-8)
         # all_pred, _ = self._forward_full(dm_test_x)
-        # pi = self.pi.cpu().detach().numpy().flatten()
+        # logits = self.logits.cpu().detach().numpy().flatten()
         # pred = all_pred[dm_test.val_graph.val_idx]
         # label = dm_test.val_graph.y[dm_test.val_graph.val_idx]
         
         accuracy = ((torch.sigmoid(pred) > 0.5).float() == label).float().mean()
-        fig = plot_edge_probs(pi, log_scale=False)
+        fig = plot_edge_probs(logits, log_scale=False)
         fig_att = plot_attention(self)
         fig_degres = plot_degree_distribution(self)
         
