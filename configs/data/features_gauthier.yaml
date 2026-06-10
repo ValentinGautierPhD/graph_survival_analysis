@@ -1,5 +1,14 @@
-_target_: survival_analysis.data.features_gauthier_datamodule.FeaturesGauthierDataModule
-data_dir: "/home/valentin/data/features/new_dataset_featv4_surv-nonan.csv"
-validation_fraction: 0.2
-test_fraction: 0.2
-batch_size: 256
+split_index: 0
+
+# Chemins vers les fichiers physiques
+csv_path: "/home/valentin/data/features/clean/features_patients.csv"
+json_splits_path: "/home/valentin/data/features/clean/splits.json"
+
+datamodule:
+  _target_: survival_analysis.data.features_gauthier_datamodule.GauthierSurvivalDataModule
+  # On passe les arguments attendus par le __init__ de ton nouveau DataModule
+  csv_path: ${data.csv_path}
+  json_splits_path: ${data.json_splits_path}
+  split_index: ${data.split_index}
+  select: null
+  batch_size: 64
