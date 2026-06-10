@@ -28,6 +28,7 @@ class MLP(pl.LightningModule):
             layers += [
                 nn.Linear(dims[i], dims[i + 1]),
                 nn.ReLU(),
+                nn.BatchNorm1d(dims[i + 1]),
                 nn.Dropout(dropouts[i]),
             ]
 
