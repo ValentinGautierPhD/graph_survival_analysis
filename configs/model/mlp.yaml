@@ -1,0 +1,21 @@
+_target_: survival_analysis.models.mlp.MLP
+
+optimizer:
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: 0.001
+  weight_decay: 5e-4
+
+# scheduler:
+#   _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+#   _partial_: true
+#   mode: min
+#   factor: 0.1
+#   patience: 10
+
+in_dim: null
+out_dim: 1
+hid_dims: [10]
+dropouts: [0.1]
+loss:
+  _target_: survival_analysis.utils.losses.CoxPHLoss
