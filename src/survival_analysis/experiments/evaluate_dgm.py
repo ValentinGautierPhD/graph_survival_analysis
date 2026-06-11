@@ -1,7 +1,7 @@
 import hydra
 import wandb
 import numpy as np
-import matplotlib.pyplot as plt
+import torch
 from omegaconf import DictConfig
 from typing import Optional
 from lightning.pytorch import Callback, LightningModule, Trainer, LightningDataModule
@@ -65,6 +65,14 @@ def main(cfg: DictConfig) -> Optional[float]:
     log.info("Starting training...")
     trainer.fit(model=model, datamodule=datamodule, ckpt_path=cfg.get("ckpt_path"))
 
+    best_ckpt = trainer.checkpoint_callback.best_model_path
+    if best_ckpt:
+        log.info(f"Loading best weights: {best_ckpt}")
+        checkpoint = torch.load(best_ckpt, map_location=model.device)
+        model.load_state_dict(checkpoint["state_dict"])
+    else:
+        log.warning("No checkpoint found, using final model state")
+    
     log.info("Starting survival evaluation...")
     metrics = model.evaluate(datamodule)
     metrics["fold_index"] = cfg.data.split_index  # injecté ici, pas dans le modèle
