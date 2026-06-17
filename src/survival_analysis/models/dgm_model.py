@@ -46,14 +46,13 @@ class SurvivalDGM(pl.LightningModule):
         W_sym = 0.5 * (self.W + self.W.T)
         logits = z @ W_sym @ z.T  / np.sqrt(z.size(-1)) # [n, n]
         # pi = torch.sigmoid(logits)
-        pi = self.hard_concrete(logits, tau=self.tau, deterministic=True)
+        pi_raw = self.hard_concrete(logits, tau=self.tau, deterministic=True)
+        pi_upper = torch.triu(pi_raw, diagonal=1)
+
+        pi = (pi_upper + pi_upper.T)
         self.logits = logits
         
-        if self.training_mode:
-            # binary concrete
-            mask_raw = self.hard_concrete(logits, tau=self.tau, deterministic=False)
-        else:
-            mask_raw = ((pi)>0.5).int()
+        mask_raw = self.hard_concrete(logits, tau=self.tau, deterministic=False)
 
         # taking upper part of mask for symetrization
         upper_mask = torch.triu(mask_raw, diagonal=1)
@@ -61,8 +60,9 @@ class SurvivalDGM(pl.LightningModule):
         # On symétrise : l'arête (i,j) devient égale à l'arête (j,i)
         adjacency = torch.ones_like(upper_mask) * (upper_mask + upper_mask.t())
 
-        self.pi = pi
+        self.pi = pi.detach()
         self.adjacency = adjacency
+        self.logits = logits.detach()
         # self.weights = weights
 
         # Pytorch geometric format
