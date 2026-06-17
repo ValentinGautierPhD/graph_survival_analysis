@@ -1,12 +1,23 @@
+# split_index: 0
+# datamodule:
+#   _target_: survival_analysis.data.synthetic.SyntheticGraphClassificationDataModule
+#   n_nodes: 600
+#   n_features: 16
+#   n_classes: 2
+#   alpha: 0.99      # 0 = graphe inutile, 1 = graphe indispensable
+#   noise: 0.01      # bruit sur les features
+#   p_in: 0.3       # proba arête intra-communauté
+#   p_out: 0.001      # proba arête inter-communauté
+#   val_size: 0.2
+#   seed: 42
+#
 split_index: 0
+
 datamodule:
-  _target_: survival_analysis.data.synthetic.SyntheticGraphClassificationDataModule
-  n_nodes: 600
-  n_features: 16
-  n_classes: 2
-  alpha: 0.99      # 0 = graphe inutile, 1 = graphe indispensable
-  noise: 0.01      # bruit sur les features
-  p_in: 0.3       # proba arête intra-communauté
-  p_out: 0.001      # proba arête inter-communauté
+  _target_: survival_analysis.data.synthetic.SyntheticGraphRecoveryDataModule
+
+  n_nodes: 100
+  p_edge: 0.1
+
   val_size: 0.2
   seed: 42

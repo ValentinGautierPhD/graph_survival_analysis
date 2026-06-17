@@ -95,3 +95,109 @@ class SyntheticGraphClassificationDataModule(LightningDataModule):
 
     def val_dataloader(self):
         return DataLoader([self.val_graph], batch_size=1, shuffle=False)
+
+
+class SyntheticGraphRecoveryDataModule(LightningDataModule):
+
+    def __init__(
+        self,
+        n_nodes: int = 300,
+        p_edge: float = 0.05,
+        val_size: float = 0.2,
+        seed: int = 42,
+    ):
+        super().__init__()
+
+        self.save_hyperparameters(logger=False)
+
+        self.in_dim = n_nodes
+        self.out_dim = n_nodes
+
+    def setup(self, stage=None):
+
+        hp = self.hparams
+        rng = np.random.default_rng(hp.seed)
+
+        # --------------------------------------------------
+        # 1. Graphe aléatoire
+        # --------------------------------------------------
+        G = nx.erdos_renyi_graph(
+            n=hp.n_nodes,
+            p=hp.p_edge,
+            seed=hp.seed,
+        )
+
+        A = nx.to_numpy_array(G).astype(np.float32)
+
+        self.true_graph = G
+        self.true_A = torch.tensor(A)
+
+        # --------------------------------------------------
+        # 2. Features identité
+        # --------------------------------------------------
+        X = np.eye(hp.n_nodes, dtype=np.float32)
+
+        # --------------------------------------------------
+        # 3. Cibles = somme des features voisines
+        # --------------------------------------------------
+        Y = A.sum(axis=0).reshape(-1, 1)
+
+        # équivalent à :
+        # Y = A
+
+        # --------------------------------------------------
+        # 4. Split train / val
+        # --------------------------------------------------
+        all_idx = np.arange(hp.n_nodes)
+
+        train_idx, val_idx = train_test_split(
+            all_idx,
+            test_size=hp.val_size,
+            random_state=hp.seed,
+        )
+
+        edge_index = torch.empty((2, 0), dtype=torch.long)
+
+        # --------------------------------------------------
+        # 5. Graphes PyG
+        # --------------------------------------------------
+        self.train_graph = Data(
+            x=torch.from_numpy(X[train_idx]).float(),
+            y=torch.from_numpy(Y[train_idx]).float(),
+            edge_index=edge_index,
+        )
+
+        self.val_graph = Data(
+            x=torch.from_numpy(X).float(),
+            y=torch.from_numpy(Y).float(),
+            edge_index=edge_index,
+        )
+
+        self.val_graph.val_idx = torch.tensor(
+            val_idx,
+            dtype=torch.long,
+        )
+
+        print(
+            f"Nodes: {hp.n_nodes} | "
+            f"Edges: {G.number_of_edges()}"
+        )
+
+        print(
+            f"Train: {len(train_idx)} | "
+            f"Val: {len(val_idx)}"
+        )
+
+    def train_dataloader(self):
+        return DataLoader(
+            [self.train_graph],
+            batch_size=1,
+            shuffle=False,
+        )
+
+    def val_dataloader(self):
+        return DataLoader(
+            [self.val_graph],
+            batch_size=1,
+            shuffle=False,
+        )

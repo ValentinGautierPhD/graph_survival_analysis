@@ -179,99 +179,177 @@ class SurvivalDGM(pl.LightningModule):
 
 
 class ClassifDGM(SurvivalDGM):
-    def __init__(self, in_dim, hid_dim, optimizer, scheduler=None, tau=0.05, lambda1=0.0, lambda2=0):
-        super().__init__(in_dim, hid_dim, optimizer,scheduler, tau, lambda1, lambda2)
-        self.loss = nn.BCEWithLogitsLoss()
+    def __init__(
+        self,
+        in_dim,
+        hid_dim,
+        optimizer,
+        scheduler=None,
+        tau=0.05,
+        lambda1=0.0,
+        lambda2=0.0,
+    ):
+        super().__init__(
+            in_dim=in_dim,
+            hid_dim=hid_dim,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            tau=tau,
+            lambda1=lambda1,
+            lambda2=lambda2,
+        )
 
-    def training_step(self, batch, batch_idx):
-        eps = 1e-8
-        
-        # ---- forward PyG
-        pred,logits = self._forward_full(batch.x)
-        # pred: [b, n, C]
-        
-        # ---- reconstruire masque dense
-        # y = batch.y
-        label = batch.y
-        
-        loss, partial_likelihood, l1_loss, *_ = self.full_loss(pred, label, logits)
-
-        self.log("train/loss", loss, on_step=False, on_epoch=True)
-        self.log("train/BCE_loss", partial_likelihood, on_step=False, on_epoch=True)
-        self.log("train/l1_loss", self.lambda1*l1_loss, on_step=False, on_epoch=True)
-
-        return loss
+        self.loss = nn.MSELoss()
 
     def full_loss(self, pred, label, logits):
-        eps = 1e-8
-        partial_likelihood = self.loss(pred, label)
+
+        bce_loss = self.loss(pred, label)
+
         l1_loss = logits.abs().mean()
-        entropy = -logits * torch.log(logits + eps) - (1 - logits)*torch.log(1 - logits + eps)
-        entropy_loss = entropy.mean()
-        
-        loss = partial_likelihood + self.lambda1 * l1_loss + self.lambda2 * entropy_loss
 
-        return loss, partial_likelihood, l1_loss, entropy_loss
+        # même L0 que SurvivalDGM
+        second_term = (
+            self.tau
+            * torch.log(
+                -torch.ones_like(logits)
+                * self.gamma
+                / self.zeta
+            )
+        )
 
-    def validation_step(self, batch, batch_idx):
-        
-        all_pred, logits = self._forward_full(batch.x)
-        pred = all_pred[batch.val_idx]
-        label = batch.y[batch.val_idx]
+        l0_loss = torch.mean(
+            torch.sigmoid(logits - second_term)
+        )
 
-        loss, partial_likelihood, *_ = self.full_loss(pred, label, logits)
-        accuracy = ((torch.sigmoid(pred) > 0.5).float() == label).float().mean()
+        loss = (
+            bce_loss
+            + self.lambda1 * l1_loss
+            + self.lambda2 * l0_loss
+        )
 
-        self.log("val/loss", loss, on_step=False, on_epoch=True)
-        self.log("val/partial_likelihood", partial_likelihood, on_step=False, on_epoch=True)
-        self.log("val/accuracy", accuracy, on_step=False, on_epoch=True)
+        return loss, bce_loss, l1_loss, l0_loss
+
+    def training_step(self, batch, batch_idx):
+
+        pred, logits = self._forward_full(batch.x)
+
+        labels = batch.y.float()
+
+        loss, bce_loss, l1_loss, l0_loss = self.full_loss(
+            pred,
+            labels,
+            logits,
+        )
+
+        self.log(
+            "train/loss",
+            loss,
+            on_step=False,
+            on_epoch=True,
+        )
+
+        self.log(
+            "train/BCE_loss",
+            bce_loss,
+            on_step=False,
+            on_epoch=True,
+        )
+
+        self.log(
+            "train/l1_loss",
+            self.lambda1 * l1_loss,
+            on_step=False,
+            on_epoch=True,
+        )
+
+        self.log(
+            "train/l0_loss",
+            self.lambda2 * l0_loss,
+            on_step=False,
+            on_epoch=True,
+        )
 
         return loss
 
-    def evaluate(self, datamodule) -> dict:
-        # from survival_analysis.data.synthetic import SyntheticGraphClassificationDataModule
-        # dm_test = SyntheticGraphClassificationDataModule(alpha=0.95, noise=0.3, seed=999)
-        # dm_test.setup()
-        
-        x = datamodule.val_graph.x
+    def validation_step(self, batch, batch_idx):
 
-        all_pred, _ = self._forward_full(x)
-        logits = self.logits.cpu().detach().numpy().flatten()
-        pred = all_pred[datamodule.val_graph.val_idx]
-        label = datamodule.val_graph.y[datamodule.val_graph.val_idx]
+        all_pred, logits = self._forward_full(batch.x)
 
-        print(f"x shape: {x.shape}")                                          # [n_total, features]
-        print(f"all_pred shape: {all_pred.shape}")                            # [n_total, 1]
-        print(f"val_idx: {datamodule.val_graph.val_idx[:10]}")                # premiers indices
-        print(f"val_idx max: {datamodule.val_graph.val_idx.max()}")           # doit être < n_total
-        print(f"pred shape: {pred.shape}")                                    # [n_val, 1]
-        print(f"label shape: {label.shape}")                                  # [n_val, 1]
-        print(f"label unique values: {label.unique()}")                       # doit être 0 et 1
-        print(f"pred distribution: {torch.sigmoid(pred).mean():.3f}")        # si proche de 0.5 → pas de signal
-        print(f"label balance: {label.mean():.3f}")                          # doit être proche de 0.5
-        preds_binary = (torch.sigmoid(pred) > 0.5).float()
-        print(f"preds_binary unique: {preds_binary.unique(return_counts=True)}")
-        print(f"correct: {(preds_binary == label).float().sum()}/{len(label)}")
-        # Pour tester
-        # dm_test_x = (dm_test.val_graph.x - datamodule.train_graph.x.mean(0)) / (datamodule.train_graph.x.std(0) + 1e-8)
-        # all_pred, _ = self._forward_full(dm_test_x)
-        # logits = self.logits.cpu().detach().numpy().flatten()
-        # pred = all_pred[dm_test.val_graph.val_idx]
-        # label = dm_test.val_graph.y[dm_test.val_graph.val_idx]
-        
-        accuracy = ((torch.sigmoid(pred) > 0.5).float() == label).float().mean()
-        fig = plot_edge_probs(logits, log_scale=False)
-        fig_att = plot_attention(self)
-        fig_degres = plot_degree_distribution(self)
-        
+        pred = all_pred[batch.val_idx]
+        labels = batch.y[batch.val_idx].float()
+
+        loss, bce_loss, l1_loss, l0_loss = self.full_loss(
+            pred,
+            labels,
+            logits,
+        )
+
+        accuracy = (
+            (torch.sigmoid(pred) > 0.5).float()
+            == labels
+        ).float().mean()
+
+        self.log(
+            "val/loss",
+            loss,
+            on_step=False,
+            on_epoch=True,
+        )
+
+        self.log(
+            "val/BCE_loss",
+            bce_loss,
+            on_step=False,
+            on_epoch=True,
+        )
+
+        self.log(
+            "val/accuracy",
+            accuracy,
+            on_step=False,
+            on_epoch=True,
+        )
+
+        self.log(
+            "val/l0_loss",
+            self.lambda2 * l0_loss,
+            on_step=False,
+            on_epoch=True,
+        )
+
+        return loss
+
+    def evaluate(self, datamodule, threshold=0.5):
+        from sklearn.metrics import (
+            roc_auc_score,
+            average_precision_score,
+            accuracy_score,
+        )
+
+        A_true = datamodule.true_A.cpu().numpy()
+
+        A_pred = self.pi.cpu().numpy()
+
+        # on garde uniquement le triangle supérieur
+        triu = np.triu_indices_from(A_true, k=1)
+
+        y_true = A_true[triu]
+        y_score = A_pred[triu]
+
+        auc = roc_auc_score(y_true, y_score)
+
+        ap = average_precision_score(y_true, y_score)
+
+        y_hat = (y_score > threshold).astype(int)
+
+        acc = accuracy_score(y_true, y_hat)
+
         return {
-            "test/accuracy":     accuracy,
-            "fold_index":       None,
-            "edge_probs":       fig,   # figure wandb, spécifique à ce modèle
-            "gat_attention":    fig_att,
-            "degres":           fig_degres,
+            "graph/auc": auc,
+            "graph/ap": ap,
+            "graph/acc": acc,
         }
-    
+
 #Euclidean distance
 def pairwise_euclidean_distances(x, dim=-1):
     dist = torch.cdist(x,x)**2
