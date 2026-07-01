@@ -11,7 +11,7 @@ from pycox.evaluation import EvalSurv
 import plotly.express as px
 
 class SurvivalDGM(pl.LightningModule):
-    def __init__(self, in_dim, hid_dim, optimizer, scheduler=None, tau=0.05, lambda1=0.0, lambda2=0):
+    def __init__(self, in_dim, hid_dim, optimizer, scheduler=None, tau=0.05, lambda1=0.0, lambda2=0, out_dim=1):
         super().__init__()
         self.lambda1 = lambda1
         self.lambda2 = lambda2
@@ -21,14 +21,14 @@ class SurvivalDGM(pl.LightningModule):
         self.partial_optimizer = optimizer
         self.partial_scheduler = scheduler
         self.training_mode = True
-        out_dim = 1
+        # out_dim = 1
         
         self.phi = nn.Linear(in_dim, hid_dim)
         
         self.W = nn.Parameter(torch.randn(hid_dim, hid_dim))
         # self.g = nn.Linear(hid_dim, hid_dim)
-        # self.g = GCNConv(hid_dim, hid_dim)
-        self.g = GATv2Conv(hid_dim, hid_dim, heads=1, edge_dim=1, concat=False)
+        self.g = GCNConv(hid_dim, hid_dim)
+        # self.g = GATv2Conv(hid_dim, hid_dim, heads=1, edge_dim=1, concat=False)
         self.out = nn.Linear(hid_dim, out_dim)
         self.loss = CoxPHLoss()
 
@@ -39,18 +39,15 @@ class SurvivalDGM(pl.LightningModule):
         # z = torch.nn.functional.normalize(z, dim=-1)
         z = torch.nn.functional.relu(z)
 
-        # dists, _ = pairwise_euclidean_distances(z)
-        # logits = torch.exp(-dists)
-        
         # logits edges
         W_sym = 0.5 * (self.W + self.W.T)
         logits = z @ W_sym @ z.T  / np.sqrt(z.size(-1)) # [n, n]
-        # pi = torch.sigmoid(logits)
         pi_raw = self.hard_concrete(logits, tau=self.tau, deterministic=True)
         pi_upper = torch.triu(pi_raw, diagonal=1)
 
         pi = (pi_upper + pi_upper.T)
         self.logits = logits
+        # pi = nn.functional.sigmoid(logits)
         
         mask_raw = self.hard_concrete(logits, tau=self.tau, deterministic=False)
 
@@ -69,14 +66,16 @@ class SurvivalDGM(pl.LightningModule):
         edge_index, edge_attr = matrix_to_list(adjacency)
         
         # messages
-        h, (edge_index_att, attention_weights) = self.g(
-                z, 
-                edge_index=edge_index, 
-                edge_attr=edge_attr,
-                return_attention_weights=True
-            )
-        self.attention_weights = attention_weights.detach()
-        self.edge_index_att = edge_index_att.detach()
+        # h, (edge_index_att, attention_weights) = self.g(
+        #         z, 
+        #         edge_index=edge_index, 
+        #         edge_attr=edge_attr,
+        #         return_attention_weights=True
+        #     )
+        h = self.g(z, edge_index=edge_index)
+        
+        # self.attention_weights = attention_weights.detach()
+        # self.edge_index_att = edge_index_att.detach()
         # h = self.g(z, edge_index)
         # skip
         # h = z
@@ -188,6 +187,7 @@ class ClassifDGM(SurvivalDGM):
         tau=0.05,
         lambda1=0.0,
         lambda2=0.0,
+        out_dim=5
     ):
         super().__init__(
             in_dim=in_dim,
@@ -197,10 +197,63 @@ class ClassifDGM(SurvivalDGM):
             tau=tau,
             lambda1=lambda1,
             lambda2=lambda2,
+            out_dim=5
         )
 
         self.loss = nn.MSELoss()
+        self.out = nn.Linear(5, out_dim)
 
+    
+    def _forward_full(self,x):
+        # x: [n, d]
+        z = self.phi(x)  # [n, h]
+        # z = torch.nn.functional.normalize(z, dim=-1)
+        z = torch.nn.functional.relu(z)
+
+        # logits edges
+        W_sym = 0.5 * (self.W + self.W.T)
+        logits = z @ W_sym @ z.T  / np.sqrt(z.size(-1)) # [n, n]
+        pi_raw = self.hard_concrete(logits, tau=self.tau, deterministic=True)
+        pi_upper = torch.triu(pi_raw, diagonal=1)
+
+        pi = (pi_upper + pi_upper.T)
+        self.logits = logits
+        # pi = nn.functional.sigmoid(logits)
+        
+        mask_raw = self.hard_concrete(logits, tau=self.tau, deterministic=False)
+
+        # taking upper part of mask for symetrization
+        upper_mask = torch.triu(mask_raw, diagonal=1)
+
+        # On symétrise : l'arête (i,j) devient égale à l'arête (j,i)
+        adjacency = torch.ones_like(upper_mask) * (upper_mask + upper_mask.t())
+
+        self.pi = pi.detach()
+        self.adjacency = adjacency
+        self.logits = logits.detach()
+        # self.weights = weights
+
+        # Pytorch geometric format
+        edge_index, edge_attr = matrix_to_list(adjacency)
+        
+        # messages
+        # h, (edge_index_att, attention_weights) = self.g(
+        #         z, 
+        #         edge_index=edge_index, 
+        #         edge_attr=edge_attr,
+        #         return_attention_weights=True
+        #     )
+        h = self.adjacency @ x
+        
+        # self.attention_weights = attention_weights.detach()
+        # self.edge_index_att = edge_index_att.detach()
+        # h = self.g(z, edge_index)
+        # skip
+        # h = z
+        out = self.out(h)
+        
+        return out, logits
+        
     def full_loss(self, pred, label, logits):
 
         bce_loss = self.loss(pred, label)
@@ -232,7 +285,7 @@ class ClassifDGM(SurvivalDGM):
     def training_step(self, batch, batch_idx):
 
         pred, logits = self._forward_full(batch.x)
-
+        
         labels = batch.y.float()
 
         loss, bce_loss, l1_loss, l0_loss = self.full_loss(

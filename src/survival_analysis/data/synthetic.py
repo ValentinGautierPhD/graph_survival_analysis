@@ -140,7 +140,7 @@ class SyntheticGraphRecoveryDataModule(LightningDataModule):
         # --------------------------------------------------
         # 3. Cibles = somme des features voisines
         # --------------------------------------------------
-        Y = A.sum(axis=0).reshape(-1, 1)
+        Y = A
 
         # équivalent à :
         # Y = A
