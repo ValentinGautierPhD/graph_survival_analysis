@@ -1,0 +1,12 @@
+split_index: 0
+
+# Chemins vers les fichiers physiques
+csv_path: "/home/valentin/data/tadpole_challenge_201911210/tadpole_challenge/processed/processed_standard_data.csv"
+json_splits_path: "/home/valentin/data/tadpole_challenge_201911210/tadpole_challenge/processed/splits.json"
+
+datamodule:
+  _target_: survival_analysis.data.tadpole_datamodule.TadpoleGraphDataModule
+  # On passe les arguments attendus par le __init__ de ton nouveau DataModule
+  csv_path: ${data.csv_path}
+  json_splits_path: ${data.json_splits_path}
+  split_index: ${data.split_index}
