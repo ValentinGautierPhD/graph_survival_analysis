@@ -2,7 +2,7 @@
 
 from torch import nn
 import torch
-from torch_geometric.nn import EdgeConv, DenseGCNConv, DenseGraphConv, GCNConv, GATv2Conv
+from torch_geometric.nn import GCNConv, GATv2Conv, GraphConv
 from torch_geometric.typing import np
 import lightning as pl
 from pycox.models.loss import CoxPHLoss
@@ -27,7 +27,8 @@ class SurvivalDGM(pl.LightningModule):
         
         self.W = nn.Parameter(torch.randn(hid_dim, hid_dim))
         # self.g = nn.Linear(hid_dim, hid_dim)
-        self.g = GCNConv(hid_dim, hid_dim)
+        # self.g = GCNConv(hid_dim, hid_dim)
+        self.g = GraphConv(hid_dim, hid_dim)
         # self.g = GATv2Conv(hid_dim, hid_dim, heads=1, edge_dim=1, concat=False)
         self.out = nn.Linear(hid_dim, out_dim)
         self.loss = CoxPHLoss()
@@ -72,7 +73,8 @@ class SurvivalDGM(pl.LightningModule):
         #         edge_attr=edge_attr,
         #         return_attention_weights=True
         #     )
-        h = self.g(z, edge_index=edge_index)
+            
+        h = self.g(z, edge_index=edge_index, edge_weight=edge_attr)
         
         # self.attention_weights = attention_weights.detach()
         # self.edge_index_att = edge_index_att.detach()
@@ -243,7 +245,7 @@ class ClassifDGM(SurvivalDGM):
         #         edge_attr=edge_attr,
         #         return_attention_weights=True
         #     )
-        h = self.adjacency @ x
+        h = torch.matmul(self.adjacency, x)
         
         # self.attention_weights = attention_weights.detach()
         # self.edge_index_att = edge_index_att.detach()
