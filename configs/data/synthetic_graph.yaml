@@ -16,8 +16,7 @@ split_index: 0
 datamodule:
   _target_: survival_analysis.data.synthetic.SyntheticGraphRecoveryDataModule
 
-  n_nodes: 100
-  p_edge: 0.1
+  n_nodes: 5
+  p_edge: 0.5
 
-  val_size: 0.2
   seed: 42

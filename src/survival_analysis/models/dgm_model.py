@@ -5,10 +5,12 @@ import torch
 from torch_geometric.nn import GCNConv, GATv2Conv, GraphConv
 from torch_geometric.typing import np
 import lightning as pl
-from pycox.models.loss import CoxPHLoss
 from pycox.models import CoxPH
 from pycox.evaluation import EvalSurv
 import plotly.express as px
+
+import survival_analysis.utils.losses as losses
+
 
 class SurvivalDGM(pl.LightningModule):
     def __init__(self, in_dim, hid_dim, optimizer, scheduler=None, tau=0.05, lambda1=0.0, lambda2=0, out_dim=1):
@@ -31,8 +33,11 @@ class SurvivalDGM(pl.LightningModule):
         self.g = GraphConv(hid_dim, hid_dim)
         # self.g = GATv2Conv(hid_dim, hid_dim, heads=1, edge_dim=1, concat=False)
         self.out = nn.Linear(hid_dim, out_dim)
-        self.loss = CoxPHLoss()
-
+        self.loss_manager = losses.LossManager([
+            losses.CoxPHLoss(weight=1.0),
+            losses.L0LossHardConcrete(weight=self.lambda1),
+            losses.L1Loss(weight=self.lambda2, input_map={"preds": "logits"}),
+        ])
 
     def _forward_full(self,x):
         # x: [n, d]
@@ -90,38 +95,36 @@ class SurvivalDGM(pl.LightningModule):
         return out
         
     def training_step(self, batch, batch_idx):
-        eps = 1e-8
         
         # ---- forward PyG
-        pred,logits = self._forward_full(batch.x)
+        preds,logits = self._forward_full(batch.x)
+        targets = batch.y
         # pred: [b, n, C]
-
-        # ---- reconstruire masque dense
-        # y = batch.y
-        times, events = batch.y[...,0], batch.y[...,1]
+        ctx = {"preds": preds,
+               "targets": targets,
+               "logits": logits,
+               "tau": self.tau, "gamma": self.gamma, "zeta":self.zeta}
         
-        loss, partial_likelihood, l1_loss, l0_loss, *_ = self.full_loss(pred, times, events, logits)
+        total, logs = self.loss_manager(ctx)
+        self.log_losses(logs, prefix="train/")
 
-        self.log("train/loss", loss, on_step=False, on_epoch=True)
-        self.log("train/cox_loss", partial_likelihood, on_step=False, on_epoch=True)
-        self.log("train/l1_loss", self.lambda1*l1_loss, on_step=False, on_epoch=True)
-        self.log("train/l0_loss", self.lambda2*l0_loss, on_step=False, on_epoch=True)
-
-        return loss
+        return total
 
     def validation_step(self, batch, batch_idx):
         
         all_pred, logits = self._forward_full(batch.x)
-        pred = all_pred[batch.val_idx]
-        times, events = batch.y[...,0], batch.y[...,1]
-        times, events = times[batch.val_idx], events[batch.val_idx]
-
-        loss, partial_likelihood, *_ = self.full_loss(pred, times, events, logits)
+        preds = all_pred[batch.val_idx]
+        targets = batch.y[batch.val_idx]
         
-        self.log("val/loss", loss, on_step=False, on_epoch=True)
-        self.log("val/partial_likelihood", partial_likelihood, on_step=False, on_epoch=True)
+        ctx = {"preds": preds,
+               "targets": targets,
+               "logits": logits,
+               "tau": self.tau, "gamma": self.gamma, "zeta":self.zeta}
+       
+        total, logs = self.loss_manager(ctx)
+        self.log_losses(logs, prefix="val/")
 
-        return loss
+        return total
         
     def configure_optimizers(self):
         optimizer = self.partial_optimizer(
@@ -178,19 +181,27 @@ class SurvivalDGM(pl.LightningModule):
 
         return torch.minimum(torch.ones_like(y), torch.maximum(torch.zeros_like(y), y))
 
+    def log_losses(self, logs: dict[str, torch.Tensor], prefix: str = ""):
+        for name, value in logs.items():
+            self.log(
+                f"{prefix}{name}",
+                value,
+                on_step=False,
+                on_epoch=True,
+            )
 
 class ClassifDGM(SurvivalDGM):
     def __init__(
         self,
-        in_dim,
+        in_dim,      # doit être égal au nombre de nœuds N dans ce test précis (X = I)
         hid_dim,
         optimizer,
         scheduler=None,
         tau=0.05,
         lambda1=0.0,
         lambda2=0.0,
-        out_dim=5
     ):
+        # out_dim = in_dim ici : y_i vit dans le même espace que x_i (X = I_N)
         super().__init__(
             in_dim=in_dim,
             hid_dim=hid_dim,
@@ -199,210 +210,90 @@ class ClassifDGM(SurvivalDGM):
             tau=tau,
             lambda1=lambda1,
             lambda2=lambda2,
-            out_dim=5
+            out_dim=in_dim,
         )
 
-        self.loss = nn.MSELoss()
-        self.out = nn.Linear(5, out_dim)
+        # pas de couche de sortie séparée : la prédiction EST adjacency @ x (eq. 3)
+        del self.out
 
-    
-    def _forward_full(self,x):
-        # x: [n, d]
-        z = self.phi(x)  # [n, h]
-        # z = torch.nn.functional.normalize(z, dim=-1)
+        self.loss_manager = losses.LossManager([
+            losses.MSELoss(weight=1.0),  # arg min Σ (y_i - A(Φ,X) x_i)²
+            # losses.L0LossHardConcrete(weight=self.lambda1),
+            # losses.L1Loss(weight=self.lambda2, input_map={"preds": "logits"}),
+        ])
+
+    def _forward_full(self, x):
+        z = self.phi(x)
         z = torch.nn.functional.relu(z)
 
-        # logits edges
         W_sym = 0.5 * (self.W + self.W.T)
-        logits = z @ W_sym @ z.T  / np.sqrt(z.size(-1)) # [n, n]
+        logits = z @ W_sym @ z.T / np.sqrt(z.size(-1))
         pi_raw = self.hard_concrete(logits, tau=self.tau, deterministic=True)
         pi_upper = torch.triu(pi_raw, diagonal=1)
+        pi = pi_upper + pi_upper.T
 
-        pi = (pi_upper + pi_upper.T)
-        self.logits = logits
-        # pi = nn.functional.sigmoid(logits)
-        
         mask_raw = self.hard_concrete(logits, tau=self.tau, deterministic=False)
-
-        # taking upper part of mask for symetrization
         upper_mask = torch.triu(mask_raw, diagonal=1)
-
-        # On symétrise : l'arête (i,j) devient égale à l'arête (j,i)
         adjacency = torch.ones_like(upper_mask) * (upper_mask + upper_mask.t())
 
         self.pi = pi.detach()
         self.adjacency = adjacency
         self.logits = logits.detach()
-        # self.weights = weights
 
-        # Pytorch geometric format
-        edge_index, edge_attr = matrix_to_list(adjacency)
-        
-        # messages
-        # h, (edge_index_att, attention_weights) = self.g(
-        #         z, 
-        #         edge_index=edge_index, 
-        #         edge_attr=edge_attr,
-        #         return_attention_weights=True
-        #     )
-        h = torch.matmul(self.adjacency, x)
-        
-        # self.attention_weights = attention_weights.detach()
-        # self.edge_index_att = edge_index_att.detach()
-        # h = self.g(z, edge_index)
-        # skip
-        # h = z
-        out = self.out(h)
-        
+        # eq. 3 : pas de self.out, la prédiction est directement A @ x
+        out = torch.matmul(adjacency, x)
+
         return out, logits
-        
-    def full_loss(self, pred, label, logits):
-
-        bce_loss = self.loss(pred, label)
-
-        l1_loss = logits.abs().mean()
-
-        # même L0 que SurvivalDGM
-        second_term = (
-            self.tau
-            * torch.log(
-                -torch.ones_like(logits)
-                * self.gamma
-                / self.zeta
-            )
-        )
-
-        l0_loss = torch.mean(
-            torch.sigmoid(logits - second_term)
-        )
-
-        loss = (
-            bce_loss
-            + self.lambda1 * l1_loss
-            + self.lambda2 * l0_loss
-        )
-
-        return loss, bce_loss, l1_loss, l0_loss
 
     def training_step(self, batch, batch_idx):
+        preds, logits = self._forward_full(batch.x)
+        targets = batch.y.float()
 
-        pred, logits = self._forward_full(batch.x)
-        
-        labels = batch.y.float()
-
-        loss, bce_loss, l1_loss, l0_loss = self.full_loss(
-            pred,
-            labels,
-            logits,
-        )
-
-        self.log(
-            "train/loss",
-            loss,
-            on_step=False,
-            on_epoch=True,
-        )
-
-        self.log(
-            "train/BCE_loss",
-            bce_loss,
-            on_step=False,
-            on_epoch=True,
-        )
-
-        self.log(
-            "train/l1_loss",
-            self.lambda1 * l1_loss,
-            on_step=False,
-            on_epoch=True,
-        )
-
-        self.log(
-            "train/l0_loss",
-            self.lambda2 * l0_loss,
-            on_step=False,
-            on_epoch=True,
-        )
-
-        return loss
+        ctx = {
+            "preds": preds, "labels": targets, "logits": logits,
+            "tau": self.tau, "gamma": self.gamma, "zeta": self.zeta,
+        }
+        total, logs = self.loss_manager(ctx)
+        self.log_losses(logs, prefix="train/")
+        return total
 
     def validation_step(self, batch, batch_idx):
+        all_preds, logits = self._forward_full(batch.x)
+        preds = all_preds[batch.val_idx]
+        targets = batch.y[batch.val_idx].float()
 
-        all_pred, logits = self._forward_full(batch.x)
+        ctx = {
+            "preds": preds, "labels": targets, "logits": logits,
+            "tau": self.tau, "gamma": self.gamma, "zeta": self.zeta,
+        }
+        total, logs = self.loss_manager(ctx)
+        self.log_losses(logs, prefix="val/")
 
-        pred = all_pred[batch.val_idx]
-        labels = batch.y[batch.val_idx].float()
-
-        loss, bce_loss, l1_loss, l0_loss = self.full_loss(
-            pred,
-            labels,
-            logits,
-        )
-
-        accuracy = (
-            (torch.sigmoid(pred) > 0.5).float()
-            == labels
-        ).float().mean()
-
-        self.log(
-            "val/loss",
-            loss,
-            on_step=False,
-            on_epoch=True,
-        )
-
-        self.log(
-            "val/BCE_loss",
-            bce_loss,
-            on_step=False,
-            on_epoch=True,
-        )
-
-        self.log(
-            "val/accuracy",
-            accuracy,
-            on_step=False,
-            on_epoch=True,
-        )
-
-        self.log(
-            "val/l0_loss",
-            self.lambda2 * l0_loss,
-            on_step=False,
-            on_epoch=True,
-        )
-
-        return loss
+        # métrique de régression, cohérente avec la loss (pas de seuillage sigmoid)
+        mse = torch.nn.functional.mse_loss(preds, targets)
+        self.log("val/mse", mse, on_step=False, on_epoch=True)
+        return total
 
     def evaluate(self, datamodule, threshold=0.5):
-        from sklearn.metrics import (
-            roc_auc_score,
-            average_precision_score,
-            accuracy_score,
-        )
+        from sklearn.metrics import roc_auc_score, average_precision_score, accuracy_score
 
         A_true = datamodule.true_A.cpu().numpy()
-
         A_pred = self.pi.cpu().numpy()
 
-        # on garde uniquement le triangle supérieur
         triu = np.triu_indices_from(A_true, k=1)
-
         y_true = A_true[triu]
         y_score = A_pred[triu]
 
         auc = roc_auc_score(y_true, y_score)
-
         ap = average_precision_score(y_true, y_score)
-
         y_hat = (y_score > threshold).astype(int)
-
         acc = accuracy_score(y_true, y_hat)
 
         return {
             "graph/auc": auc,
             "graph/ap": ap,
             "graph/acc": acc,
+            "edge_probs": plot_edge_probs(y_score, log_scale=False),
         }
 
 #Euclidean distance

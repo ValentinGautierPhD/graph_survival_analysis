@@ -103,7 +103,6 @@ class SyntheticGraphRecoveryDataModule(LightningDataModule):
         self,
         n_nodes: int = 300,
         p_edge: float = 0.05,
-        val_size: float = 0.2,
         seed: int = 42,
     ):
         super().__init__()
@@ -149,12 +148,7 @@ class SyntheticGraphRecoveryDataModule(LightningDataModule):
         # 4. Split train / val
         # --------------------------------------------------
         all_idx = np.arange(hp.n_nodes)
-
-        train_idx, val_idx = train_test_split(
-            all_idx,
-            test_size=hp.val_size,
-            random_state=hp.seed,
-        )
+        train_idx, val_idx = all_idx, all_idx
 
         edge_index = torch.empty((2, 0), dtype=torch.long)
 
