@@ -105,8 +105,8 @@ class CoxPHLoss(Loss):
         self.loss = _CoxPHLoss()
 
     def forward(self, ctx):
-        preds = ctx["preds"]
-        targets = ctx["targets"]
+        preds = self.resolve(ctx,"preds")
+        targets = self.resolve(ctx,"targets")
         times, events = targets[...,0], targets[...,1]
         return self.loss(preds, times, events)
 
@@ -134,12 +134,14 @@ class L1Loss(Loss):
         return l1_loss
 
 class MSELoss(Loss):
-    def __init__(self, weight=1.0):
-        super().__init__(weight)
-        self.criterion = nn.MSELoss()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
     def forward(self, ctx):
-        return self.criterion(ctx["preds"], ctx["labels"])
+        loss = torch.nn.functional.mse_loss(self.resolve(ctx,"preds")
+                                            , self.resolve(ctx,"labels")
+                                            , reduction="none").sum(dim=-1).mean()
+        return loss
 
 class KLDivergence(Loss):
     def __init__(self, *args, **kwargs) -> None:
@@ -147,7 +149,7 @@ class KLDivergence(Loss):
 
     def forward(self, ctx: dict) -> torch.Tensor:
         mu = self.resolve(ctx, "mu")
-        logvar = self.resolve(ctx, "log_sigma")
+        logvar = self.resolve(ctx, "log_var")
 
-        kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+        kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=-1).mean()
         return kl

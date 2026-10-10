@@ -8,7 +8,7 @@ clean-checkpoints:
 
 # Supprime les logs Hydra
 clean-logs:
-    rm -rf outputs/ multirun/ logs/
+    rm -rf outputs/ multirun/ logs/ lightning_logs/*
 
 # Nettoyage complet
 clean: clean-checkpoints clean-logs
@@ -23,3 +23,9 @@ clean-all: clean
 # Lancer un entraînement
 train group *args:
     uv run python -m survival_analysis.experiments.evaluate_dgm -m logger.group="{{group}}_$(date +%Y%m%d_%H%M%S)" data.split_index=0,1,2,3,4 {{args}}
+
+train_vae group *args:
+    uv run python -m survival_analysis.experiments.evaluate_surv_vae -m logger.group="{{group}}_$(date +%Y%m%d_%H%M%S)" data.split_index=0,1,2,3,4 {{args}}
+
+train_latent_graph group *args:
+    uv run python -m survival_analysis.experiments.evaluate_latent_graph -m logger.group="{{group}}_$(date +%Y%m%d_%H%M%S)" data.split_index=0,1,2,3,4 {{args}}

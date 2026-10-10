@@ -4,6 +4,8 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from sklearn.model_selection import KFold
 import json
 
+from torch.utils.data import TensorDataset
+
 from omegaconf import DictConfig
 
 from survival_analysis.utils import pylogger, rich_utils
@@ -133,3 +135,12 @@ def make_splits(size: int, n_splits: int, output_path: str) -> None:
 
     with open(output_path, 'w') as f:
         json.dump(splits_list, f, indent=4)
+
+
+class TensorDatasetWithID(TensorDataset):
+    def __init__(self, *tensors, patient_ids):
+        super().__init__(*tensors)
+        self.patient_ids = patient_ids
+
+    def __getitem__(self, idx):
+        return (*super().__getitem__(idx), self.patient_ids[idx])

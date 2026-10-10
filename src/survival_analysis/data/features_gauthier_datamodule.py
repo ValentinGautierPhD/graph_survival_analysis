@@ -5,6 +5,7 @@ import torch
 from typing import Optional
 from lightning import LightningDataModule
 from torch.utils.data import DataLoader, TensorDataset
+from survival_analysis.utils.utils import TensorDatasetWithID
 from sklearn.preprocessing import StandardScaler
 
 
@@ -110,11 +111,14 @@ class GauthierSurvivalDataModule(GauthierDataModule):
         x_tensor = torch.from_numpy(x_scaled).float()
         y_tensor = torch.from_numpy(y_survival).float()
 
-        self.train_dataset = TensorDataset(
+        self.train_dataset = TensorDatasetWithID(
             x_tensor[train_idx],
             y_tensor[train_idx],
+            patient_ids=df_raw["patients_id"].to_numpy()[train_idx]
         )
-        self.val_dataset = TensorDataset(
+
+        self.val_dataset = TensorDatasetWithID(
             x_tensor[val_idx],
             y_tensor[val_idx],
+            patient_ids=df_raw["patients_id"].to_numpy()[val_idx]
         )

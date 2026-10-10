@@ -1,0 +1,31 @@
+# @package _global_
+
+defaults:
+  - /data: features_gauthier_graph # choose datamodule with `test_dataloader()` for evaluation
+  - /model: dgm
+  - /logger: wandb
+  - /trainer: gpu
+  - /callbacks: default
+  - /paths: default
+  - /extras: default
+  - /hydra: default
+  # --- étape GNN : mêmes dossiers, placés sous un autre nom de clé (@graph_*) ---
+  - /model@graph_model: GAT
+  - /data@graph_data: features_gauthier_pre_graph
+  - /trainer@graph_trainer: gpu
+  - /callbacks@graph_callbacks: default
+  - /logger@graph_logger: wandb
+  - optional /local: default
+  - _self_   # en dernier : les valeurs ci-dessous l'emportent sur celles des groupes
+
+task_name: "eval_dgm"
+
+tags: ["dev"]
+
+# passing checkpoint path is necessary for evaluation
+ckpt_path: ???
+
+# --------------------------- partie spécifique au GNN --------------------------- #
+run_graph: true          # `run_graph=false` pour ne faire que le VAE
+graph_ckpt_path: null    # reprise éventuelle de l'entraînement du GNN
+

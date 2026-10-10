@@ -1,0 +1,21 @@
+
+_target_: survival_analysis.models.vae.VAE
+
+optimizer:
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: 0.001
+  # weight_decay: 5e-4
+
+# scheduler:
+#   _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+#   _partial_: true
+#   mode: min
+#   factor: 0.1
+#   patience: 10
+
+in_dim: null
+hidden_dims: [10]
+latent_dim: 10
+beta: 1.0
+lambda_survival: 1.0

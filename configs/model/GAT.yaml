@@ -6,16 +6,15 @@ optimizer:
   lr: 0.001
   weight_decay: 0.0
 
-scheduler:
-  _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
-  _partial_: true
-  mode: min
-  factor: 0.1
-  patience: 10
+# scheduler:
+#   _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+#   _partial_: true
+#   mode: min
+#   factor: 0.1
+#   patience: 10
 
-in_features: 64
-out_features: 2
-beta: 0
-hidden_channels: 16
+in_dim: 10
+out_features: 1
+hidden_channels: 8
 edge_dim: 1
 heads: 2

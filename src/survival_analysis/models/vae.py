@@ -1,120 +1,202 @@
 #!/usr/bin/env python3
 
-from torch import nn
 import torch
+import torch.nn.functional as F
+from torch import nn
 import lightning as pl
+from sksurv.metrics import concordance_index_censored
 
 import survival_analysis.utils.losses as losses
 
+
 class Encoder(nn.Module):
-    def __init__(self, num_input_channels: int, base_channel_size: int, latent_dim: int, act_fn: object = nn.GELU):
-        """Encoder.
+    """Encodeur MLP pour données tabulaires / vecteurs de features.
 
-        Args:
-           num_input_channels : Number of input channels of the image. For CIFAR, this parameter is 3
-           base_channel_size : Number of channels we use in the first convolutional layers. Deeper layers might use a duplicate of it.
-           latent_dim : Dimensionality of latent representation z
-           act_fn : Activation function used throughout the encoder network
+    Produit :
+      - mu, logvar : paramètres de la distribution latente (VAE classique)
 
-        """
+    Args:
+        input_dim: dimension du vecteur de features en entrée.
+        hidden_dims: liste des tailles des couches cachées, ex. [128, 64].
+        latent_dim: dimension de l'espace latent z.
+        act_fn: fonction d'activation utilisée entre les couches.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dims: list,
+        latent_dim: int,
+        act_fn: object = nn.GELU,
+    ):
         super().__init__()
+
+        layers = []
+        prev_dim = input_dim
+        for h in hidden_dims:
+            layers += [nn.Linear(prev_dim, h), act_fn()]
+            prev_dim = h
+        self.backbone = nn.Sequential(*layers)
+
+        self.fc_mu = nn.Linear(prev_dim, latent_dim)
+        self.fc_logvar = nn.Linear(prev_dim, latent_dim)
+
+    def forward(self, x):
+        h = self.backbone(x)
+        mu = self.fc_mu(h)
+        logvar = self.fc_logvar(h)
+        return mu, logvar
 
 
 class Decoder(nn.Module):
-    def __init__(self, num_input_channels: int, base_channel_size: int, latent_dim: int, act_fn: object = nn.GELU):
-        """Decoder.
+    """Décodeur MLP symétrique de l'Encoder : latent z -> reconstruction.
 
-        Args:
-           num_input_channels : Number of channels of the image to reconstruct. For CIFAR, this parameter is 3
-           base_channel_size : Number of channels we use in the last convolutional layers. Early layers might use a duplicate of it.
-           latent_dim : Dimensionality of latent representation z
-           act_fn : Activation function used throughout the decoder network
+    Args:
+        output_dim: dimension du vecteur reconstruit (= input_dim de l'encodeur).
+        hidden_dims: mêmes tailles cachées que l'encodeur (utilisées en ordre inverse).
+        latent_dim: dimension de l'espace latent z.
+        act_fn: fonction d'activation utilisée entre les couches.
+    """
 
-        """
+    def __init__(
+        self,
+        output_dim: int,
+        hidden_dims: list,
+        latent_dim: int,
+        act_fn: object = nn.GELU,
+    ):
         super().__init__()
+
+        layers = []
+        prev_dim = latent_dim
+        for h in reversed(hidden_dims):
+            layers += [nn.Linear(prev_dim, h), act_fn()]
+            prev_dim = h
+        layers.append(nn.Linear(prev_dim, output_dim))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, z):
+        return self.net(z)
+
+
+class RiskHead(nn.Module):
+    """Petite tête linéaire latent -> score de risque scalaire pour CoxPHLoss."""
+
+    def __init__(self, latent_dim: int):
+        super().__init__()
+        self.fc = nn.Linear(latent_dim, 1)
+
+    def forward(self, z):
+        return self.fc(z).squeeze(-1)
 
 
 class VAE(pl.LightningModule):
     def __init__(
         self,
-        base_channel_size: int,
+        in_dim: int,
+        hidden_dims: list,
         latent_dim: int,
         encoder_class: object = Encoder,
         decoder_class: object = Decoder,
-        num_input_channels: int = 3,
-        width: int = 32,
-        height: int = 32,
+        beta: float = 1.0,
+        lambda_survival: float = 1.0,
+        optimizer: object = None,
+        scheduler: object = None,
     ):
         super().__init__()
-        # Saving hyperparameters of autoencoder
+        # Saving hyperparameters of the model
         self.save_hyperparameters()
-        # Creating encoder and decoder
-        self.encoder = encoder_class(num_input_channels, base_channel_size, latent_dim)
-        self.decoder = decoder_class(num_input_channels, base_channel_size, latent_dim)
+
+        self.beta = beta
+        self.lambda_survival = lambda_survival
+
+        self.partial_optimizer = optimizer
+        self.partial_scheduler = scheduler
+
+        # Creating encoder, decoder and risk head
+        self.encoder = encoder_class(in_dim, hidden_dims, latent_dim)
+        self.decoder = decoder_class(in_dim, hidden_dims, latent_dim)
+        self.risk_head = RiskHead(latent_dim)
 
         self.loss_manager = losses.LossManager([
-            losses.CoxPHLoss(weight=1.0),
-            losses.L0LossHardConcrete(weight=self.lambda1),
-            losses.L1Loss(weight=self.lambda2, input_map={"preds": "logits"}),
+            losses.MSELoss(weight=1.0, input_map={"preds": "x",
+                                                  "labels": "reconstruction"}),
+            losses.KLDivergence(weight=self.beta),
+            losses.CoxPHLoss(weight=self.lambda_survival),
         ])
 
-    def forward(self, x):
-        out, _ = self._forward_full(x)
-        return out
-        
-    def training_step(self, batch, batch_idx):
-        
-        # ---- forward PyG
-        preds,logits = self._forward_full(batch.x)
-        targets = batch.y
-        # pred: [b, n, C]
-        ctx = {"preds": preds,
-               "targets": targets,
-               "logits": logits,
-               "tau": self.tau, "gamma": self.gamma, "zeta":self.zeta}
-        
-        total, logs = self.loss_manager(ctx)
-        self.log_losses(logs, prefix="train/")
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
 
+    def _forward_full(self, x):
+        mu, logvar = self.encoder(x)
+        z = self.reparameterize(mu, logvar)
+        x_hat = self.decoder(z)
+        risk = self.risk_head(mu)
+        return x_hat, mu, logvar, risk
+
+    def forward(self, x):
+        x_hat, *_ = self._forward_full(x)
+        return x_hat
+
+    def training_step(self, batch, batch_idx):
+        x, targets, *_ = batch
+
+        x_hat, mu, logvar, risk = self._forward_full(x)
+
+        ctx = {
+            "preds": risk,
+            "reconstruction": x_hat,
+            "mu": mu,
+            "log_var": logvar,
+            "x": x,
+            "targets": targets,
+        }
+
+        total, logs = self.loss_manager(ctx)
+
+        self.log_losses(logs, prefix="train/")
         return total
 
-    def _get_reconstruction_loss(self, batch):
-        """Given a batch of images, this function returns the reconstruction loss (MSE in our case)."""
-        x, _ = batch  # We do not need the labels
-        x_hat = self.forward(x)
-        loss = F.mse_loss(x, x_hat, reduction="none")
-        loss = loss.sum(dim=[1, 2, 3]).mean(dim=[0])
-        return loss
-
     def configure_optimizers(self):
-        optimizer = self.partial_optimizer(
-            self.parameters(),
-        )
+        optimizer = self.partial_optimizer(self.parameters())
         if self.partial_scheduler is None:
             return optimizer
 
         scheduler = self.partial_scheduler(optimizer)
         return {
-        "optimizer": optimizer,
-        "lr_scheduler": {
-            "scheduler": scheduler,
-            "monitor": "val/loss",
-            # "frequency": "indicates how often the metric is updated",
-            # If "monitor" references validation metrics, then "frequency" should be set to a
-            # multiple of "trainer.check_val_every_n_epoch".
-        },
-    }
-
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "monitor": "val/loss",
+                # "frequency": "indique la fréquence de mise à jour de la métrique",
+                # si "monitor" référence une métrique de validation, "frequency" doit être
+                # un multiple de "trainer.check_val_every_n_epoch".
+            },
+        }
 
     def validation_step(self, batch, batch_idx):
-        loss = self._get_reconstruction_loss(batch)
-        self.log("val_loss", loss)
+        x, targets, *_ = batch
 
-    def test_step(self, batch, batch_idx):
-        loss = self._get_reconstruction_loss(batch)
-        self.log("test_loss", loss)
+        x_hat, mu, logvar, risk = self._forward_full(x)
 
-    def log_losses(self, logs: dict[str, torch.Tensor], prefix: str = ""):
+        ctx = {
+            "preds": risk,
+            "reconstruction": x_hat,
+            "x": x,
+            "mu": mu,
+            "log_var": logvar,
+            "targets": targets,
+        }
+
+        total, logs = self.loss_manager(ctx)
+
+        self.log_losses(logs, prefix="val/")
+        return total
+
+    def log_losses(self, logs: dict, prefix: str = ""):
         for name, value in logs.items():
             self.log(
                 f"{prefix}{name}",
@@ -122,3 +204,30 @@ class VAE(pl.LightningModule):
                 on_step=False,
                 on_epoch=True,
             )
+
+    def evaluate(self, datamodule):
+        all_risk = []
+        all_time = []
+        all_event = []
+        
+        with torch.no_grad():
+            for x, y, patient_id in datamodule.val_dataloader():
+                *_, risk = self._forward_full(x)
+                all_risk.append(risk)
+                time = y[:, 0]
+                all_time.append(time)
+                event = y[:, 1]
+                all_event.append(event)
+        risks = torch.cat(all_risk, dim=0).detach().cpu().numpy()
+        times = torch.cat(all_time, dim=0).detach().cpu().numpy()
+        events = torch.cat(all_event, dim=0).detach().cpu().numpy().astype(bool)
+
+        c_index = concordance_index_censored(
+            events,
+            times,
+            risks
+        )[0]
+
+        return {
+            "test/c_index": c_index
+        }
