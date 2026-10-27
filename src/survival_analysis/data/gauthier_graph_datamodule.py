@@ -136,11 +136,12 @@ class GauthierGraphSurvivalDataModule(GauthierGraphDataModule):
         self.val_graph.val_idx = torch.tensor(val_idx, dtype=torch.long)
 
 class GauthierPreGraph(GauthierGraphSurvivalDataModule):
-    def __init__(self, vae, csv_path: str, json_splits_path: str, split_index: int = 0, select=None):
+    def __init__(self, vae, csv_path: str, json_splits_path: str, split_index: int = 0, select=None, k=40):
         self.vae = vae
         super().__init__(csv_path, json_splits_path, split_index, select=select)
-
-    def compute_graph(self, x):
+        self.k = k
+        
+    def compute_graph(self, x, k=40):
         _, mu, log_var, _ = self.vae._forward_full(x)
         std = torch.exp(0.5 * log_var)
 
@@ -158,7 +159,7 @@ class GauthierPreGraph(GauthierGraphSurvivalDataModule):
 
         D = torch.sqrt(D2)
 
-        G = knn_graph_networkx(mu, 40, dist=D)
+        G = knn_graph_networkx(mu, k, dist=D)
 
         data = from_networkx(G)
         data.weight = data.weight.float()
@@ -194,12 +195,12 @@ class GauthierPreGraph(GauthierGraphSurvivalDataModule):
         x_val = torch.from_numpy(x_scaled).float().to("cuda")
         x_train = x_val[train_idx]
 
-        val_graph = self.compute_graph(x_val)
+        val_graph = self.compute_graph(x_val, k=self.k)
         val_graph.x = x_val
         val_graph.y = torch.from_numpy(y_survival).float()
         self.val_graph = val_graph
 
-        train_graph = self.compute_graph(x_train)
+        train_graph = self.compute_graph(x_train, k=self.k)
         train_graph.x = x_train
         train_graph.y = torch.from_numpy(y_survival[train_idx]).float()
         self.train_graph = train_graph

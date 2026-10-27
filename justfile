@@ -29,3 +29,6 @@ train_vae group *args:
 
 train_latent_graph group *args:
     uv run python -m survival_analysis.experiments.evaluate_latent_graph -m logger.group="{{group}}_$(date +%Y%m%d_%H%M%S)" data.split_index=0,1,2,3,4 {{args}}
+
+train_graph_vae group *args:
+    uv run python -m survival_analysis.experiments.evaluate_graphVAE -m logger.group="{{group}}_$(date +%Y%m%d_%H%M%S)" data.split_index=0,1,2,3,4 {{args}}

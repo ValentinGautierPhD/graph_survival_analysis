@@ -10,7 +10,7 @@ defaults:
   - /extras: default
   - /hydra: default
   # --- étape GNN : mêmes dossiers, placés sous un autre nom de clé (@graph_*) ---
-  - /model@graph_model: GAT
+  - /model@graph_model: graph_sage
   - /data@graph_data: features_gauthier_pre_graph
   - /trainer@graph_trainer: gpu
   - /callbacks@graph_callbacks: default

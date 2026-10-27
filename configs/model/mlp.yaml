@@ -17,5 +17,3 @@ in_dim: null
 out_dim: 1
 hid_dims: [10]
 dropouts: [0.1]
-loss:
-  _target_: survival_analysis.utils.losses.CoxPHLoss

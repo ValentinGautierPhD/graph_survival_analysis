@@ -6,12 +6,12 @@ import numpy as np
 import torch
 import lightning as pl
 # from pycox.models.loss import CoxPHLoss
-from survival_analysis.utils.losses import CoxPHLoss
+import survival_analysis.utils.losses as losses
 from pycox.models import CoxPH
 import plotly.express as px
 
 class MLP(pl.LightningModule):
-    def __init__(self, in_dim, out_dim, hid_dims, dropouts, loss, optimizer, scheduler=None):
+    def __init__(self, in_dim, out_dim, hid_dims, dropouts, optimizer, scheduler=None):
         super().__init__()
         assert len(hid_dims) >= 1, "At least one hidden layer needed"
         assert len(hid_dims) == len(dropouts), "number of hidden dimensions must match number of dropouts"
@@ -20,8 +20,10 @@ class MLP(pl.LightningModule):
         self.partial_scheduler = scheduler
         self.training_mode = True
         self.out_dim = out_dim
-        self.loss = CoxPHLoss()
 
+        self.loss_manager = losses.LossManager([
+            losses.CoxPHLoss(weight=1),
+        ])
         dims = [in_dim] + hid_dims
         layers = []
         for i in range(len(dims) - 1):
@@ -33,12 +35,6 @@ class MLP(pl.LightningModule):
             ]
 
         self.hid_layers = nn.Sequential(*layers)
-        # self.phi = nn.Linear(in_dim, 10)
-        # self.relu = nn.ReLU()
-        # self.dropout = nn.Dropout(0.2)
-        # self.out = nn.Linear(10, out_dim)
-        # layers = [nn.Linear(in_dim, 10),nn.ReLU(),nn.Dropout(0.2)]
-        # self.hid_layers = nn.Sequential(*layers)
         self.out = nn.Linear(hid_dims[-1], out_dim)
 
     def forward(self, x):
@@ -49,26 +45,42 @@ class MLP(pl.LightningModule):
         return self.out(embedding)
         
     def training_step(self, batch, batch_idx):
-        x, y = batch
+        x, y = batch[:2]
 
         preds = self(x)
-        loss = self.loss(preds, y)
+        ctx = {
+            "preds": preds,
+            "targets": y
+        }
 
-        self.log("train/loss", loss, on_step=False, on_epoch=True)
+        total, logs = self.loss_manager(ctx)
 
-        return loss
+        self.log_losses(logs, prefix="train/")
+        return total
 
     def validation_step(self, batch, batch_idx):
-        x, y = batch
+        x, y = batch[:2]
 
         preds = self(x)
-        # loss = self.loss(preds, y)
-        loss = self.loss(preds, y)
+        ctx = {
+            "preds": preds,
+            "targets": y
+        }
 
-        self.log("val/loss", loss, on_step=False, on_epoch=True)
+        total, logs = self.loss_manager(ctx)
 
-        return loss
+        self.log_losses(logs, prefix="val/")
+        return total
         
+    def log_losses(self, logs: dict, prefix: str = ""):
+        for name, value in logs.items():
+            self.log(
+                f"{prefix}{name}",
+                value,
+                on_step=False,
+                on_epoch=True,
+            )
+
     def configure_optimizers(self):
         optimizer = self.partial_optimizer(
             self.parameters(),
