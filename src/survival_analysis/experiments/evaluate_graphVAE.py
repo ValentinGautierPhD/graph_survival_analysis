@@ -96,7 +96,7 @@ def train_gnn(cfg: DictConfig, vae: LightningModule) -> None:
     graph_datamodule.setup()
 
     log.info(f"Instantiating GNN <{cfg.graph_model._target_}>")
-    gnn: LightningModule = hydra.utils.instantiate(cfg.graph_model, vae=vae)
+    gnn: LightningModule = hydra.utils.instantiate(cfg.graph_model, vae=vae, in_dim=graph_datamodule.in_dim)
 
     # Callbacks NEUFS : ne jamais réutiliser ceux du VAE
     callbacks: list[Callback] = instantiate_callbacks(cfg.get("graph_callbacks"))

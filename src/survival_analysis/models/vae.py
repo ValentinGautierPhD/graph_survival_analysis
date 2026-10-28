@@ -107,6 +107,7 @@ class VAE(pl.LightningModule):
         # Saving hyperparameters of the model
         self.save_hyperparameters()
 
+        self.latent_dim = latent_dim
         self.beta = beta
         self.lambda_survival = lambda_survival
 

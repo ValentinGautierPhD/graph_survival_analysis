@@ -13,3 +13,4 @@ datamodule:
   split_index: ${data.split_index}
   select: null
   k: 10
+  feature_mode: "mu"

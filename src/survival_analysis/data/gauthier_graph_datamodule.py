@@ -136,33 +136,49 @@ class GauthierGraphSurvivalDataModule(GauthierGraphDataModule):
         self.val_graph.val_idx = torch.tensor(val_idx, dtype=torch.long)
 
 class GauthierPreGraph(GauthierGraphSurvivalDataModule):
-    def __init__(self, vae, csv_path: str, json_splits_path: str, split_index: int = 0, select=None, k=40):
+    def __init__(self, vae, csv_path: str, json_splits_path: str, split_index: int = 0, select=None, k=40, feature_mode="x"):
         self.vae = vae
+        self.feature_mode = feature_mode
         super().__init__(csv_path, json_splits_path, split_index, select=select)
         self.k = k
         
-    def compute_graph(self, x, k=40):
-        _, mu, log_var, _ = self.vae._forward_full(x)
-        std = torch.exp(0.5 * log_var)
+    def compute_graph(self, x, k=40, feature_mode="x"):
+        self.vae.eval()
 
-        mu_i = mu[:, None, :]
-        mu_j = mu[None, :, :]
+        with torch.no_grad():
+            _, mu, log_var, _ = self.vae._forward_full(x)
+            std = torch.exp(0.5 * log_var)
 
-        std_i = std[:, None, :]
-        std_j = std[None, :, :]
+            # Distance utilisée pour construire les arêtes :
+            # identique pour toutes les variantes
+            mu_i = mu[:, None, :]
+            mu_j = mu[None, :, :]
+            std_i = std[:, None, :]
+            std_j = std[None, :, :]
 
-        D2 = (
-            torch.sum((mu_i - mu_j) ** 2, dim=-1)
-            +
-            torch.sum((std_i - std_j) ** 2, dim=-1)
-        )
+            D2 = (
+                torch.sum((mu_i - mu_j) ** 2, dim=-1)
+                + torch.sum((std_i - std_j) ** 2, dim=-1)
+            )
+            D = torch.sqrt(D2.clamp_min(0))
 
-        D = torch.sqrt(D2)
+            G = knn_graph_networkx(mu, k, dist=D)
 
-        G = knn_graph_networkx(mu, k, dist=D)
+            if feature_mode == "x":
+                node_features = x
+            elif feature_mode == "mu":
+                node_features = mu
+            elif feature_mode == "mu_std":
+                node_features = torch.cat([mu, std], dim=-1)
+            else:
+                raise ValueError(
+                    f"feature_mode inconnu : {feature_mode}"
+                )
 
-        data = from_networkx(G)
-        data.weight = data.weight.float()
+            data = from_networkx(G)
+            data.weight = data.weight.float()
+            data.x = node_features.detach()
+
         return data
         
     def setup(self, stage: Optional[str] = None):
@@ -195,18 +211,24 @@ class GauthierPreGraph(GauthierGraphSurvivalDataModule):
         x_val = torch.from_numpy(x_scaled).float().to("cuda")
         x_train = x_val[train_idx]
 
-        val_graph = self.compute_graph(x_val, k=self.k)
-        val_graph.x = x_val
+        val_graph = self.compute_graph(
+            x_val, k=self.k, feature_mode=self.feature_mode
+        )
         val_graph.y = torch.from_numpy(y_survival).float()
         self.val_graph = val_graph
 
-        train_graph = self.compute_graph(x_train, k=self.k)
-        train_graph.x = x_train
+        train_graph = self.compute_graph(
+            x_train, k=self.k, feature_mode=self.feature_mode
+        )
         train_graph.y = torch.from_numpy(y_survival[train_idx]).float()
         self.train_graph = train_graph
         
-        self.in_dim = x_scaled.shape[-1]
-
+        if self.feature_mode == "x":
+            self.in_dim = x_scaled.shape[-1]
+        elif self.feature_mode == "mu":
+            self.in_dim = self.vae.latent_dim  # à adapter à ton API
+        elif self.feature_mode == "mu_std":
+                self.in_dim = 2 * self.vae.latent_dim
         self.val_graph.val_idx = torch.tensor(val_idx, dtype=torch.long)
 
 
